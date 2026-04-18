@@ -1,0 +1,22 @@
+services:
+  api:
+    build: ./api
+    ports:
+      - "8080:8080"
+    environment:
+      - WORKER_URL=http://worker:8081
+    depends_on:
+      - worker
+    networks:
+      - demo
+
+  worker:
+    build: ./worker
+    ports:
+      - "8081:8081"
+    networks:
+      - demo
+
+networks:
+  demo:
+    driver: bridge

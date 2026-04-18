@@ -59,12 +59,14 @@ Three crates in the repo:
 | Module | Status | Notes |
 |---|---|---|
 | `rewind-common` | Done | HttpEvent, SyscallEvent types with aya::Pod |
-| `rewind-ebpf` | Stubbed | Probe structure in place, TCP/syscall capture logic is TODO |
+| `rewind-ebpf` | Done | tcp_sendmsg kprobe parses HTTP method/path/status; sys_exit captures clock_gettime + getrandom |
 | `src/store/snapshot.rs` | Done | Full .rwd read/write, Event display |
 | `src/cli.rs` | Done | All four subcommands wired |
-| `src/capture/agent.rs` | Stubbed | eBPF loader commented out, needs impl |
+| `src/capture/agent.rs` | Done | eBPF loader, per-CPU async perf array drain, event collection |
 | `src/replay/engine.rs` | Stubbed | Strategy documented in comments, needs impl |
 | `src/replay/network.rs` | Stubbed | MockServer skeleton, HTTP parsing is TODO |
+| `examples/docker-compose-demo` | Done | api + worker Flask services; `make demo` wires everything |
+| `Makefile` | Done | build-ebpf → build-userspace → demo targets |
 
 ## MVP milestone
 
