@@ -14,23 +14,18 @@
 
 use anyhow::Result;
 use clap::Parser;
-
-mod capture;
-mod cli;
-mod replay;
-mod store;
-
-use cli::{Cli, Command};
+use rewind::cli::{Cli, Command};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Attach(args) => capture::agent::attach(args).await,
-        Command::Record(args) => capture::agent::run(args).await,
-        Command::Replay(args) => replay::engine::run(args).await,
-        Command::Inspect(args) => store::snapshot::inspect(args).await,
-        Command::Flush(args) => capture::agent::flush(args).await,
+        Command::Attach(args)  => rewind::capture::agent::attach(args).await,
+        Command::Record(args)  => rewind::capture::agent::run(args).await,
+        Command::Flush(args)   => rewind::capture::agent::flush(args).await,
+        Command::Replay(args)  => rewind::replay::engine::run(args).await,
+        Command::Inspect(args) => rewind::store::snapshot::inspect(args).await,
+        Command::Export(args)  => rewind::export::run(args).await,
     }
 }

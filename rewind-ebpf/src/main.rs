@@ -263,22 +263,29 @@ fn try_capture_recv(ctx: ProbeContext) -> Result<(), i64> {
     }
     let captured_len = (iov_len as usize).min(256) as u32;
 
-    // We don't have the sock here, so we detect the protocol from the payload.
-    // Postgres responses start with a message-type byte followed by a 4-byte length.
-    // Redis responses start with '+', '-', ':', '$', or '*'.
+    // Detect protocol from payload heuristics (no sock pointer available here).
+    // Postgres: message-type byte + 4-byte length (T/D/C/Z/E/1/2/n/I).
+    // Redis:    RESP first byte (+/-/:/$/∗).
+    // MySQL:    4-byte packet header (3-byte len LE + seq byte); seq==1 for the
+    //           server's first response, followed by 0x00=OK/0xFF=ERR/0xFE=EOF.
     let (proto_id, looks_like_db) = match data[0] {
-        // Postgres server messages: 'T'=RowDescription, 'D'=DataRow, 'C'=CommandComplete,
-        // 'Z'=ReadyForQuery, 'E'=ErrorResponse, '1'=ParseComplete, '2'=BindComplete
         b'T' | b'D' | b'C' | b'Z' | b'E' | b'1' | b'2' | b'n' | b'I' => (0u8, true),
-        // Redis server responses
         b'+' | b'-' | b':' | b'$' | b'*' => (1u8, true),
-        _ => (0u8, false),
+        _ => {
+            if data[3] == 1 && (data[4] == 0x00 || data[4] == 0xff || data[4] == 0xfe) {
+                (2u8, true) // MySQL
+            } else {
+                (0u8, false)
+            }
+        }
     };
 
     if looks_like_db {
-        // Determine destination port for this socket so we can assign the right
-        // protocol. Without the sock pointer we fall back to payload heuristics above.
-        let dport: u16 = if proto_id == 0 { 5432 } else { 6379 };
+        let dport: u16 = match proto_id {
+            1 => 6379,
+            2 => 3306,
+            _ => 5432,
+        };
         emit_db_event(&ctx, &data, captured_len, dport, proto_id, 1 /* response */);
     }
 

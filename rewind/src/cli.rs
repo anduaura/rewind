@@ -37,6 +37,8 @@ pub enum Command {
     Replay(ReplayArgs),
     /// Print the contents of a .rwd snapshot
     Inspect(InspectArgs),
+    /// Export a .rwd snapshot to OTLP JSON (pipe to any OpenTelemetry collector)
+    Export(ExportArgs),
 }
 
 #[derive(Args)]
@@ -94,4 +96,14 @@ pub struct ReplayArgs {
 pub struct InspectArgs {
     /// Path to the .rwd snapshot file
     pub snapshot: PathBuf,
+}
+
+#[derive(Args)]
+pub struct ExportArgs {
+    /// Path to the .rwd snapshot file
+    pub snapshot: PathBuf,
+
+    /// Write output to file instead of stdout
+    #[arg(long, short)]
+    pub output: Option<PathBuf>,
 }

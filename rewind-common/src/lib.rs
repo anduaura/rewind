@@ -64,7 +64,8 @@ unsafe impl aya::Pod for SyscallEvent {}
 #[repr(u8)]
 pub enum DbProtocol {
     Postgres = 0,
-    Redis = 1,
+    Redis    = 1,
+    MySQL    = 2,
 }
 
 /// Emitted by the tcp_sendmsg / tcp_recvmsg probes for Postgres/Redis traffic.

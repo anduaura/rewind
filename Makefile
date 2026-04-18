@@ -29,6 +29,10 @@ fmt:
 	cargo fmt
 	cd rewind-ebpf && cargo fmt
 
+## Run criterion benchmarks (ring buffer throughput, snapshot I/O).
+bench:
+	cd rewind && cargo bench
+
 clean:
 	cargo clean
 	cd rewind-ebpf && cargo clean

@@ -207,6 +207,7 @@ fn init_watched_ports(bpf: &mut Bpf) -> Result<()> {
     )?;
     map.insert(5432u32, 0u8, 0)?; // Postgres
     map.insert(6379u32, 1u8, 0)?; // Redis
+    map.insert(3306u32, 2u8, 0)?; // MySQL
     Ok(())
 }
 
@@ -396,12 +397,14 @@ fn correlate_db_buf(
     let protocol = match raw.protocol {
         DbProtocol::Postgres => "postgres",
         DbProtocol::Redis    => "redis",
+        DbProtocol::MySQL    => "mysql",
     };
 
     if raw.is_response == 0 {
         let query = match raw.protocol {
             DbProtocol::Postgres => parse_postgres_query(payload),
             DbProtocol::Redis    => parse_redis_query(payload),
+            DbProtocol::MySQL    => parse_mysql_query(payload),
         };
         let record = DbRecord {
             timestamp_ns: raw.timestamp_ns,
@@ -421,6 +424,7 @@ fn correlate_db_buf(
         let response_text = match raw.protocol {
             DbProtocol::Postgres => parse_postgres_response(payload),
             DbProtocol::Redis    => parse_redis_response(payload),
+            DbProtocol::MySQL    => parse_mysql_response(payload),
         };
         let completed = pending
             .lock()
@@ -469,6 +473,42 @@ fn parse_redis_query(data: &[u8]) -> String {
 }
 
 /// Postgres server messages: CommandComplete ('C') is the most informative.
+/// MySQL client wire protocol: 3-byte packet length (LE) + 1-byte seq + payload.
+/// COM_QUERY (0x03): payload[0] == 0x03, remaining bytes are the SQL text.
+/// COM_STMT_PREPARE (0x16): prepared statement SQL follows the command byte.
+fn parse_mysql_query(data: &[u8]) -> String {
+    if data.len() < 5 {
+        return format!("(raw {} bytes)", data.len());
+    }
+    match data[4] {
+        0x03 | 0x16 => String::from_utf8_lossy(&data[5..]).trim_end_matches('\0').trim().to_string(),
+        cmd => format!("(cmd=0x{cmd:02x} {} bytes)", data.len()),
+    }
+}
+
+/// MySQL server response: skip 4-byte packet header, inspect status byte.
+/// 0x00 = OK (affected_rows and last_insert_id follow as length-encoded ints).
+/// 0xFF = ERR (2-byte error code + '#' + 5-byte SQLSTATE + message).
+/// 0xFE = EOF / AuthSwitch.
+fn parse_mysql_response(data: &[u8]) -> String {
+    if data.len() < 5 {
+        return String::new();
+    }
+    match data[4] {
+        0x00 => "OK".to_string(),
+        0xfe => "EOF".to_string(),
+        0xff if data.len() >= 13 => {
+            // error code (2 bytes LE) + '#' + sqlstate (5) + message
+            let code = u16::from_le_bytes([data[5], data[6]]);
+            let msg_start = 13; // skip '#' + sqlstate
+            let msg = String::from_utf8_lossy(&data[msg_start..]).trim_end_matches('\0').to_string();
+            format!("ERR {code}: {msg}")
+        }
+        0xff => "ERR".to_string(),
+        _ => format!("(result columns={})", data[4]),
+    }
+}
+
 fn parse_postgres_response(data: &[u8]) -> String {
     if data.is_empty() {
         return String::new();
