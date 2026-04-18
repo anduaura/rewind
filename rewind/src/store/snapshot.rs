@@ -27,7 +27,7 @@ pub struct Snapshot {
     pub events: Vec<Event>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
     Http(HttpRecord),
@@ -35,7 +35,7 @@ pub enum Event {
     Db(DbRecord),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HttpRecord {
     pub timestamp_ns: u64,
     pub direction: String,
@@ -47,7 +47,7 @@ pub struct HttpRecord {
     pub body: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SyscallRecord {
     pub timestamp_ns: u64,
     pub kind: String,

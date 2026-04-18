@@ -58,11 +58,12 @@ Three crates in the repo:
 
 | Module | Status | Notes |
 |---|---|---|
-| `rewind-common` | Done | HttpEvent, SyscallEvent, DbEvent types with aya::Pod |
-| `rewind-ebpf` | Done | tcp_sendmsg kprobe: HTTP + Postgres wire protocol + Redis RESP via WATCHED_PORTS map; sys_exit captures clock_gettime + getrandom |
-| `src/store/snapshot.rs` | Done | Full .rwd read/write, Event display |
+| `rewind-common` | Done | HttpEvent (+ headers_raw), SyscallEvent, DbEvent (+ is_response) types with aya::Pod |
+| `rewind-ebpf` | Done | tcp_sendmsg kprobe: HTTP (+ headers_raw capture) + Postgres + Redis via WATCHED_PORTS; tcp_recvmsg kprobe+kretprobe (DB response capture); sys_exit captures clock_gettime + getrandom |
+| `src/store/snapshot.rs` | Done | Full .rwd read/write, Event display; Event/HttpRecord/SyscallRecord are Clone |
 | `src/cli.rs` | Done | All four subcommands wired |
-| `src/capture/agent.rs` | Done | eBPF loader, per-CPU async perf array drain, event collection |
+| `src/capture/ring.rs` | Done | RingBuffer (VecDeque + Instant), bounded 200k events, drain_window(Duration) |
+| `src/capture/agent.rs` | Done | eBPF loader, per-CPU async perf array drain, ring buffer, traceparent extraction, DB query/response correlation, Unix socket IPC for `rewind flush` |
 | `src/replay/engine.rs` | Done | Compose up w/ clock+proxy override, MockServer spawn, trigger re-execution, health wait |
 | `src/replay/network.rs` | Done | axum-based MockServer, method+path matching, in-order response consumption, 502 diagnostics |
 | `examples/docker-compose-demo` | Done | api + worker Flask services with Postgres + Redis; `make demo` wires everything |

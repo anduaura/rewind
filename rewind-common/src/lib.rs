@@ -38,8 +38,9 @@ pub struct HttpEvent {
     pub status_code: u16, // 0 for requests
     pub direction: Direction,
     pub _pad: u8,
-    pub method: [u8; 8],   // e.g. b"GET\0\0\0\0\0"
+    pub method: [u8; 8],      // e.g. b"GET\0\0\0\0\0"
     pub path: [u8; 128],
+    pub headers_raw: [u8; 128], // bytes immediately after the request line (\r\n)
 }
 
 /// Emitted by the sys_exit tracepoint for clock_gettime and getrandom.
@@ -66,9 +67,7 @@ pub enum DbProtocol {
     Redis = 1,
 }
 
-/// Emitted by the tcp_sendmsg kprobe for each Postgres/Redis wire-protocol
-/// message observed. The probe fires when a service sends a query; we capture
-/// the raw payload so userspace can parse the query text.
+/// Emitted by the tcp_sendmsg / tcp_recvmsg probes for Postgres/Redis traffic.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct DbEvent {
@@ -76,7 +75,7 @@ pub struct DbEvent {
     pub pid: u32,
     pub dport: u16,          // 5432 = Postgres, 6379 = Redis
     pub protocol: DbProtocol,
-    pub _pad: u8,
+    pub is_response: u8,     // 0 = query sent by service, 1 = response from DB
     pub payload_len: u32,    // bytes actually captured (≤ 256)
     pub payload: [u8; 256],
 }
