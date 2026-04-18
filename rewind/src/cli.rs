@@ -27,6 +27,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Attach to a Docker Compose stack — auto-detects services from compose file
+    Attach(AttachArgs),
     /// Record inter-service traffic and syscalls to a .rwd snapshot
     Record(RecordArgs),
     /// Flush the in-memory ring buffer to disk (triggered capture)
@@ -35,6 +37,21 @@ pub enum Command {
     Replay(ReplayArgs),
     /// Print the contents of a .rwd snapshot
     Inspect(InspectArgs),
+}
+
+#[derive(Args)]
+pub struct AttachArgs {
+    /// Docker Compose file to read services from
+    #[arg(long, short = 'f', default_value = "docker-compose.yml")]
+    pub compose: PathBuf,
+
+    /// Output file path
+    #[arg(long, short, default_value = "incident.rwd")]
+    pub output: PathBuf,
+
+    /// Capture request/response bodies (increases snapshot size significantly)
+    #[arg(long)]
+    pub capture_bodies: bool,
 }
 
 #[derive(Args)]

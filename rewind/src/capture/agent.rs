@@ -31,7 +31,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::signal;
 
 use crate::capture::ring::RingBuffer;
-use crate::cli::{FlushArgs, RecordArgs};
+use crate::cli::{AttachArgs, FlushArgs, RecordArgs};
 use crate::store::snapshot::{DbRecord, Event, HttpRecord, Snapshot, SyscallRecord};
 use rewind_common::{DbEvent, DbProtocol, Direction, HttpEvent, SyscallEvent};
 
@@ -100,6 +100,40 @@ pub async fn run(args: RecordArgs) -> Result<()> {
     let _ = std::fs::remove_file(SOCKET_PATH);
 
     Ok(())
+}
+
+/// Read a Docker Compose file and start recording all discovered services.
+pub async fn attach(args: AttachArgs) -> Result<()> {
+    let services = detect_services(&args.compose)?;
+    println!("Detected {} service(s): {}", services.len(), services.join(", "));
+    run(RecordArgs {
+        services,
+        output: args.output,
+        capture_bodies: args.capture_bodies,
+    })
+    .await
+}
+
+/// Parse `services:` keys from a docker-compose.yml (v2/v3 format).
+fn detect_services(compose_path: &Path) -> Result<Vec<String>> {
+    let content = std::fs::read_to_string(compose_path)
+        .with_context(|| format!("could not read {}", compose_path.display()))?;
+    let doc: serde_yaml::Value = serde_yaml::from_str(&content)
+        .with_context(|| format!("invalid YAML in {}", compose_path.display()))?;
+    let services = doc
+        .get("services")
+        .and_then(|s| s.as_mapping())
+        .ok_or_else(|| {
+            anyhow::anyhow!("no 'services' section in {}", compose_path.display())
+        })?;
+    let names: Vec<String> = services
+        .keys()
+        .filter_map(|k| k.as_str().map(str::to_string))
+        .collect();
+    if names.is_empty() {
+        anyhow::bail!("no services found in {}", compose_path.display());
+    }
+    Ok(names)
 }
 
 pub async fn flush(args: FlushArgs) -> Result<()> {
