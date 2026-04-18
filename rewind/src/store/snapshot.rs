@@ -32,6 +32,7 @@ pub struct Snapshot {
 pub enum Event {
     Http(HttpRecord),
     Syscall(SyscallRecord),
+    Db(DbRecord),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -54,6 +55,16 @@ pub struct SyscallRecord {
     pub pid: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DbRecord {
+    pub timestamp_ns: u64,
+    pub protocol: String, // "postgres" | "redis"
+    pub query: String,
+    pub response: Option<String>,
+    pub service: String,
+    pub pid: u32,
+}
+
 impl fmt::Display for Event {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -72,6 +83,11 @@ impl fmt::Display for Event {
                 f,
                 "[{:>16}ns] SYSCALL {:12} -> {}",
                 s.timestamp_ns, s.kind, s.return_value
+            ),
+            Event::Db(d) => write!(
+                f,
+                "[{:>16}ns] DB {:8} {}",
+                d.timestamp_ns, d.protocol, d.query
             ),
         }
     }
@@ -106,10 +122,14 @@ impl Snapshot {
 pub async fn inspect(args: InspectArgs) -> Result<()> {
     let snapshot = Snapshot::read(&args.snapshot)?;
 
+    let http_count  = snapshot.events.iter().filter(|e| matches!(e, Event::Http(_))).count();
+    let db_count    = snapshot.events.iter().filter(|e| matches!(e, Event::Db(_))).count();
+    let sys_count   = snapshot.events.iter().filter(|e| matches!(e, Event::Syscall(_))).count();
+
     println!("rewind snapshot v{}", snapshot.version);
     println!("recorded:  {} ns since epoch", snapshot.recorded_at_ns);
     println!("services:  {}", snapshot.services.join(", "));
-    println!("events:    {}", snapshot.events.len());
+    println!("events:    {}  (http={http_count} db={db_count} syscall={sys_count})", snapshot.events.len());
     println!();
 
     for event in &snapshot.events {

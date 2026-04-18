@@ -16,18 +16,33 @@
 #![no_main]
 
 use aya_ebpf::{
-    helpers::{bpf_get_current_pid_tgid, bpf_ktime_get_ns, bpf_probe_read_kernel, bpf_probe_read_user_buf},
+    helpers::{
+        bpf_get_current_pid_tgid, bpf_ktime_get_ns, bpf_probe_read_kernel,
+        bpf_probe_read_user_buf,
+    },
     macros::{kprobe, map, tracepoint},
-    maps::PerfEventArray,
+    maps::{HashMap, PerfEventArray},
     programs::{ProbeContext, TracePointContext},
 };
-use rewind_common::{Direction, HttpEvent, SyscallEvent, SyscallKind};
+use rewind_common::{DbEvent, DbProtocol, Direction, HttpEvent, SyscallEvent, SyscallKind};
 
 #[map(name = "HTTP_EVENTS")]
 static mut HTTP_EVENTS: PerfEventArray<HttpEvent> = PerfEventArray::new(0);
 
 #[map(name = "SYSCALL_EVENTS")]
 static mut SYSCALL_EVENTS: PerfEventArray<SyscallEvent> = PerfEventArray::new(0);
+
+#[map(name = "DB_EVENTS")]
+static mut DB_EVENTS: PerfEventArray<DbEvent> = PerfEventArray::new(0);
+
+/// Userspace populates this with { port → DbProtocol discriminant } before
+/// attaching the probe. Checked on every tcp_sendmsg to decide whether to
+/// parse the payload as a DB protocol.
+///
+///   5432 → 0 (Postgres)
+///   6379 → 1 (Redis)
+#[map(name = "WATCHED_PORTS")]
+static WATCHED_PORTS: HashMap<u32, u8> = HashMap::with_max_entries(16, 0);
 
 // ─── tcp_sendmsg kprobe ───────────────────────────────────────────────────────
 
@@ -41,6 +56,7 @@ pub fn tcp_sendmsg(ctx: ProbeContext) -> u32 {
 
 fn try_capture_send(ctx: ProbeContext) -> Result<(), i64> {
     // tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
+    let sk: u64 = unsafe { ctx.arg(0).ok_or(1i64)? };
     let msg: u64 = unsafe { ctx.arg(1).ok_or(1i64)? };
     if msg == 0 {
         return Ok(());
@@ -52,11 +68,11 @@ fn try_capture_send(ctx: ProbeContext) -> Result<(), i64> {
     //   msghdr.msg_iter            @ msghdr + 16  (embedded struct, not a ptr)
     //   iov_iter.iov               @ iov_iter + 24 → msghdr + 40
     //   iovec[0].iov_base          @ iov + 0      (user-space data ptr)
+    //   iovec[0].iov_len           @ iov + 8
     //
-    // For kernels < 5.14 (no user_backed field), iov sits at iov_iter + 16
-    // (msg + 32). Adjust IOV_ITER_IOV_OFFSET below if needed.
+    // Adjust IOV_ITER_IOV_OFFSET to 16 for kernels < 5.14.
     const MSG_ITER_OFFSET: u64 = 16;
-    const IOV_ITER_IOV_OFFSET: u64 = 24; // kernel 5.14+; use 16 on older kernels
+    const IOV_ITER_IOV_OFFSET: u64 = 24;
 
     let iov: u64 = unsafe {
         bpf_probe_read_kernel((msg + MSG_ITER_OFFSET + IOV_ITER_IOV_OFFSET) as *const u64)
@@ -66,22 +82,25 @@ fn try_capture_send(ctx: ProbeContext) -> Result<(), i64> {
         return Ok(());
     }
 
-    // iov[0].iov_base is the first field of struct iovec (offset 0).
     let iov_base: u64 = unsafe {
         bpf_probe_read_kernel(iov as *const u64).map_err(|e| e as i64)?
     };
-    if iov_base == 0 {
+    let iov_len: u64 = unsafe {
+        bpf_probe_read_kernel((iov + 8) as *const u64).map_err(|e| e as i64)?
+    };
+
+    if iov_base == 0 || iov_len == 0 {
         return Ok(());
     }
 
-    // Read the first 256 bytes of the message from user space.
+    // Read up to 256 bytes of the message payload from user space.
     let mut data = [0u8; 256];
     unsafe {
         bpf_probe_read_user_buf(iov_base as *const u8, &mut data).map_err(|e| e as i64)?;
     }
+    let captured_len = (iov_len as usize).min(256) as u32;
 
-    // Only proceed if this looks like HTTP traffic.
-    // Responses start with "HTTP/"; requests start with a method verb.
+    // ── HTTP detection ────────────────────────────────────────────────────────
     let is_response = data.starts_with(b"HTTP/");
     let is_request = data.starts_with(b"GET ")
         || data.starts_with(b"POST ")
@@ -91,26 +110,66 @@ fn try_capture_send(ctx: ProbeContext) -> Result<(), i64> {
         || data.starts_with(b"HEAD ")
         || data.starts_with(b"OPTIONS ");
 
-    if !is_request && !is_response {
+    if is_request || is_response {
+        emit_http_event(&ctx, &data, is_response);
         return Ok(());
     }
 
+    // ── DB protocol detection ─────────────────────────────────────────────────
+    //
+    // Read the destination port from sock->sk_common.skc_dport (big-endian).
+    // struct sock_common layout (x86_64, stable across 4.x–6.x):
+    //   skc_addrpair  @ +0  (8 bytes)
+    //   skc_hash      @ +8  (4 bytes)
+    //   skc_portpair  @ +12 → skc_dport @ +12 (big-endian u16)
+    if sk != 0 {
+        let dport_be: u16 = unsafe {
+            bpf_probe_read_kernel((sk + 12) as *const u16).map_err(|e| e as i64)?
+        };
+        let dport = u16::from_be(dport_be);
+
+        if let Some(&proto_id) = unsafe { WATCHED_PORTS.get(&(dport as u32)) } {
+            let protocol = if proto_id == 0 {
+                DbProtocol::Postgres
+            } else {
+                DbProtocol::Redis
+            };
+
+            let mut event = DbEvent {
+                timestamp_ns: unsafe { bpf_ktime_get_ns() },
+                pid: (unsafe { bpf_get_current_pid_tgid() } >> 32) as u32,
+                dport,
+                protocol,
+                _pad: 0,
+                payload_len: captured_len,
+                payload: [0u8; 256],
+            };
+            event.payload.copy_from_slice(&data);
+
+            unsafe { DB_EVENTS.output(&ctx, &event, 0) };
+        }
+    }
+
+    Ok(())
+}
+
+fn emit_http_event(ctx: &ProbeContext, data: &[u8; 256], is_response: bool) {
     let mut event = HttpEvent {
         timestamp_ns: unsafe { bpf_ktime_get_ns() },
         body_len: 0,
         pid: (unsafe { bpf_get_current_pid_tgid() } >> 32) as u32,
         status_code: 0,
-        direction: if is_request {
-            Direction::Outbound
-        } else {
+        direction: if is_response {
             Direction::Inbound
+        } else {
+            Direction::Outbound
         },
         _pad: 0,
         method: [0u8; 8],
         path: [0u8; 128],
     };
 
-    if is_request {
+    if !is_response {
         // Extract method: bytes before the first space, up to 8 chars.
         let mut i = 0usize;
         while i < 8 && data[i] != b' ' {
@@ -118,7 +177,7 @@ fn try_capture_send(ctx: ProbeContext) -> Result<(), i64> {
             i += 1;
         }
 
-        // Extract path: token between the first and second space.
+        // Extract path: token between first and second space.
         let path_start = i + 1;
         let mut j = 0usize;
         while j < 128 {
@@ -130,10 +189,7 @@ fn try_capture_send(ctx: ProbeContext) -> Result<(), i64> {
             j += 1;
         }
     } else {
-        // Response: parse status code from "HTTP/1.x NNN"
-        //   0123456789...
-        //   HTTP/1.1 200 OK\r\n
-        //            ^ offset 9
+        // Parse status code from "HTTP/1.x NNN"
         if data.len() >= 12 {
             let s = (data[9] as u16 - b'0' as u16) * 100
                 + (data[10] as u16 - b'0' as u16) * 10
@@ -143,11 +199,7 @@ fn try_capture_send(ctx: ProbeContext) -> Result<(), i64> {
         event.method.copy_from_slice(b"HTTP    ");
     }
 
-    unsafe {
-        HTTP_EVENTS.output(&ctx, &event, 0);
-    }
-
-    Ok(())
+    unsafe { HTTP_EVENTS.output(ctx, &event, 0) };
 }
 
 // ─── sys_exit tracepoint ──────────────────────────────────────────────────────
@@ -162,26 +214,18 @@ pub fn sys_exit(ctx: TracePointContext) -> u32 {
 
 fn try_capture_syscall(ctx: TracePointContext) -> Result<(), i64> {
     // sys_exit tracepoint format (x86_64):
-    //   offset 0..8   common fields (type, flags, pid)
-    //   offset 8      long id   — syscall number
-    //   offset 16     long ret  — return value
+    //   offset 8   long id  — syscall number
+    //   offset 16  long ret — return value
     let id: i64 = unsafe { ctx.read_at::<i64>(8).map_err(|e| e as i64)? };
     let ret: i64 = unsafe { ctx.read_at::<i64>(16).map_err(|e| e as i64)? };
 
-    // Only capture non-deterministic syscalls we care about.
-    // x86_64 syscall numbers:
-    //   228 = clock_gettime
-    //   318 = getrandom
+    // x86_64 syscall numbers:  228 = clock_gettime,  318 = getrandom
     let kind = match id {
         228 => SyscallKind::ClockGettime,
         318 => SyscallKind::Getrandom,
         _ => return Ok(()),
     };
 
-    // For clock_gettime the timespec is written to a user-space pointer (arg 1),
-    // not returned directly. Capturing bpf_ktime_get_ns() here gives a close
-    // approximation for MVP; the exact value needs a paired sys_enter probe
-    // that saves the tp pointer per-PID so we can read it here.
     let return_value = match kind {
         SyscallKind::ClockGettime => unsafe { bpf_ktime_get_ns() },
         SyscallKind::Getrandom => ret as u64,
@@ -195,9 +239,7 @@ fn try_capture_syscall(ctx: TracePointContext) -> Result<(), i64> {
         _pad: [0u8; 3],
     };
 
-    unsafe {
-        SYSCALL_EVENTS.output(&ctx, &event, 0);
-    }
+    unsafe { SYSCALL_EVENTS.output(&ctx, &event, 0) };
 
     Ok(())
 }

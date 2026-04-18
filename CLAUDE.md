@@ -58,14 +58,14 @@ Three crates in the repo:
 
 | Module | Status | Notes |
 |---|---|---|
-| `rewind-common` | Done | HttpEvent, SyscallEvent types with aya::Pod |
-| `rewind-ebpf` | Done | tcp_sendmsg kprobe parses HTTP method/path/status; sys_exit captures clock_gettime + getrandom |
+| `rewind-common` | Done | HttpEvent, SyscallEvent, DbEvent types with aya::Pod |
+| `rewind-ebpf` | Done | tcp_sendmsg kprobe: HTTP + Postgres wire protocol + Redis RESP via WATCHED_PORTS map; sys_exit captures clock_gettime + getrandom |
 | `src/store/snapshot.rs` | Done | Full .rwd read/write, Event display |
 | `src/cli.rs` | Done | All four subcommands wired |
 | `src/capture/agent.rs` | Done | eBPF loader, per-CPU async perf array drain, event collection |
 | `src/replay/engine.rs` | Done | Compose up w/ clock+proxy override, MockServer spawn, trigger re-execution, health wait |
 | `src/replay/network.rs` | Done | axum-based MockServer, method+path matching, in-order response consumption, 502 diagnostics |
-| `examples/docker-compose-demo` | Done | api + worker Flask services; `make demo` wires everything |
+| `examples/docker-compose-demo` | Done | api + worker Flask services with Postgres + Redis; `make demo` wires everything |
 | `Makefile` | Done | build-ebpf → build-userspace → demo targets |
 
 ## MVP milestone

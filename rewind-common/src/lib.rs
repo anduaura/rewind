@@ -58,3 +58,28 @@ unsafe impl aya::Pod for HttpEvent {}
 
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for SyscallEvent {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DbProtocol {
+    Postgres = 0,
+    Redis = 1,
+}
+
+/// Emitted by the tcp_sendmsg kprobe for each Postgres/Redis wire-protocol
+/// message observed. The probe fires when a service sends a query; we capture
+/// the raw payload so userspace can parse the query text.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct DbEvent {
+    pub timestamp_ns: u64,
+    pub pid: u32,
+    pub dport: u16,          // 5432 = Postgres, 6379 = Redis
+    pub protocol: DbProtocol,
+    pub _pad: u8,
+    pub payload_len: u32,    // bytes actually captured (≤ 256)
+    pub payload: [u8; 256],
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for DbEvent {}
