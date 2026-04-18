@@ -1,0 +1,11 @@
+[package]
+name = "rewind-common"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+user = ["dep:aya"]
+
+[dependencies]
+aya = { version = "0.13", optional = true }

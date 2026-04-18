@@ -1,0 +1,21 @@
+[package]
+name = "rewind-ebpf"
+version = "0.1.0"
+edition = "2021"
+
+# Excluded from the workspace — build separately:
+#   cargo build --target bpfel-unknown-none -Z build-std=core
+[workspace]
+
+[[bin]]
+name = "rewind-ebpf"
+path = "src/main.rs"
+
+[dependencies]
+aya-ebpf = "0.1"
+aya-log-ebpf = "0.1"
+rewind-common = { path = "../rewind-common" }
+
+[profile.release]
+opt-level = 3
+lto = true
