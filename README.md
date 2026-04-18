@@ -101,4 +101,4 @@ rewind's position: open source, kernel-level (zero instrumentation), focused on 
 
 ## License
 
-MIT
+Apache License 2.0 — see [LICENSE](LICENSE) for the full text.
