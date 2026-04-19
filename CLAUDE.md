@@ -112,6 +112,11 @@ Three crates in the repo:
 | 33 | VS Code extension — browse, inspect, and replay `.rwd` files directly from the editor | Pending |
 | 34 | Replay diff — compare two replays side-by-side; surface divergences in DB responses and timing | Pending |
 | 35 | SaaS collection plane — hosted server + web UI; teams push snapshots, share replay links, view timelines | Pending |
+| 36 | seccomp/AppArmor profile — replace `privileged: true` with minimal capabilities + seccomp profile | Pending |
+| 37 | Cloud storage sink — `rewind push s3://\|gs://\|az://` for snapshot archival to object storage | Pending |
+| 38 | Grafana dashboard bundle — pre-built dashboards for the `/metrics` Prometheus endpoint | Pending |
+| 39 | Kafka capture — eBPF producer/consumer wire protocol (port 9092) capture | Pending |
+| 40 | Package distribution — Homebrew tap + apt/deb + rpm packages for frictionless installation | Pending |
 
 ## Enterprise readiness goal
 
