@@ -92,12 +92,7 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           securityContext:
-            privileged: true
-            capabilities:
-              add:
-                - BPF
-                - PERFMON
-                - SYS_PTRACE
+            {{- toYaml .Values.securityContext | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

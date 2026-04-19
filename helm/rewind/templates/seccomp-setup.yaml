@@ -1,0 +1,93 @@
+{{- if .Values.seccompSetup.enabled }}
+# This DaemonSet runs once per node to copy the bundled rewind seccomp profile
+# into /var/lib/kubelet/seccomp/rewind/ so the kubelet can reference it as
+# seccompProfile.type: Localhost with localhostProfile: rewind/seccomp.json.
+#
+# Enable with:
+#   seccompSetup.enabled: true
+#   securityContext.seccompProfile.type: Localhost
+#   securityContext.seccompProfile.localhostProfile: rewind/seccomp.json
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ .Chart.Name }}-seccomp-setup
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}-seccomp-setup
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    {{- with .Values.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}-seccomp-setup
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 100%
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}-seccomp-setup
+    spec:
+      tolerations:
+        {{- toYaml .Values.tolerations | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        - name: install-seccomp-profile
+          image: {{ .Values.seccompSetup.image }}
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /host-seccomp/rewind
+              cp /profiles/seccomp.json /host-seccomp/rewind/seccomp.json
+              echo "Installed rewind seccomp profile to /var/lib/kubelet/seccomp/rewind/seccomp.json"
+          volumeMounts:
+            - name: host-seccomp
+              mountPath: /host-seccomp
+            - name: seccomp-profile
+              mountPath: /profiles
+      # Pause container keeps the pod Running so the DaemonSet stays healthy;
+      # the actual work is done in the init container above.
+      containers:
+        - name: pause
+          image: {{ .Values.seccompSetup.image }}
+          command: ["sh", "-c", "while true; do sleep 3600; done"]
+          resources:
+            requests:
+              cpu: 1m
+              memory: 4Mi
+            limits:
+              cpu: 10m
+              memory: 16Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: host-seccomp
+          hostPath:
+            path: /var/lib/kubelet/seccomp
+            type: DirectoryOrCreate
+        - name: seccomp-profile
+          configMap:
+            name: {{ .Chart.Name }}-seccomp-profile
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Chart.Name }}-seccomp-profile
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  seccomp.json: |
+    {{- .Files.Get "files/seccomp.json" | nindent 4 }}
+{{- end }}

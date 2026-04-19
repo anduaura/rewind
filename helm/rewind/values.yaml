@@ -40,3 +40,40 @@ nodeSelector: {}
 
 # Additional labels to add to all resources.
 extraLabels: {}
+
+# Security context for the rewind container.
+#
+# The defaults drop all Linux capabilities and add back only what eBPF
+# requires, which is far narrower than the previous `privileged: true`.
+#
+# seccompProfile.type options:
+#   RuntimeDefault  — use the container runtime's built-in profile (recommended;
+#                     works on containerd ≥ 1.7 and CRI-O ≥ 1.25).
+#   Localhost       — use the bundled rewind profile installed by the
+#                     seccomp-setup DaemonSet (see seccompSetup below).
+#   Unconfined      — no seccomp filtering (same as privileged; last resort).
+#
+# To revert to the old fully-privileged mode (e.g. on kernels < 5.8):
+#   securityContext:
+#     privileged: true
+securityContext:
+  privileged: false
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+    add:
+      - BPF        # load eBPF programs and create maps  (CAP_BPF, kernel ≥ 5.8)
+      - PERFMON    # perf_event_open for kprobes/tracepoints (kernel ≥ 5.8)
+      - SYS_PTRACE # read /proc/<pid> for container PID lookup
+      - SYS_RESOURCE # raise RLIMIT_MEMLOCK for eBPF map allocation
+  seccompProfile:
+    type: RuntimeDefault
+
+# When seccompProfile.type is Localhost this DaemonSet copies
+# helm/rewind/files/seccomp.json to /var/lib/kubelet/seccomp/rewind/ on every
+# node so the kubelet can reference it.  Disable if you manage the profile
+# out-of-band.
+seccompSetup:
+  enabled: false  # set to true when using seccompProfile.type: Localhost
+  image: busybox:1.36
