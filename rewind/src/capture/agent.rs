@@ -205,9 +205,10 @@ fn init_watched_ports(bpf: &mut Bpf) -> Result<()> {
     let mut map: HashMap<_, u32, u8> = HashMap::try_from(
         bpf.map_mut("WATCHED_PORTS").context("WATCHED_PORTS map not found")?,
     )?;
-    map.insert(5432u32, 0u8, 0)?; // Postgres
-    map.insert(6379u32, 1u8, 0)?; // Redis
-    map.insert(3306u32, 2u8, 0)?; // MySQL
+    map.insert(5432u32,  0u8, 0)?; // Postgres
+    map.insert(6379u32,  1u8, 0)?; // Redis
+    map.insert(3306u32,  2u8, 0)?; // MySQL
+    map.insert(27017u32, 3u8, 0)?; // MongoDB
     Ok(())
 }
 
@@ -398,6 +399,7 @@ fn correlate_db_buf(
         DbProtocol::Postgres => "postgres",
         DbProtocol::Redis    => "redis",
         DbProtocol::MySQL    => "mysql",
+        DbProtocol::MongoDB  => "mongodb",
     };
 
     if raw.is_response == 0 {
@@ -405,6 +407,7 @@ fn correlate_db_buf(
             DbProtocol::Postgres => parse_postgres_query(payload),
             DbProtocol::Redis    => parse_redis_query(payload),
             DbProtocol::MySQL    => parse_mysql_query(payload),
+            DbProtocol::MongoDB  => parse_mongodb_query(payload),
         };
         let record = DbRecord {
             timestamp_ns: raw.timestamp_ns,
@@ -425,6 +428,7 @@ fn correlate_db_buf(
             DbProtocol::Postgres => parse_postgres_response(payload),
             DbProtocol::Redis    => parse_redis_response(payload),
             DbProtocol::MySQL    => parse_mysql_response(payload),
+            DbProtocol::MongoDB  => parse_mongodb_response(payload),
         };
         let completed = pending
             .lock()
@@ -506,6 +510,112 @@ fn parse_mysql_response(data: &[u8]) -> String {
         }
         0xff => "ERR".to_string(),
         _ => format!("(result columns={})", data[4]),
+    }
+}
+
+/// MongoDB OP_MSG (opcode 2013): header(16) + flags(4) + section_kind(1) + BSON doc.
+/// The first BSON element key is the command name; its string value is the collection.
+fn parse_mongodb_query(data: &[u8]) -> String {
+    if data.len() < 16 {
+        return format!("(raw {} bytes)", data.len());
+    }
+    let opcode = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
+    match opcode {
+        2013 => {
+            // OP_MSG: skip header(16) + flags(4) + section_kind(1) + bson_len(4) = offset 25
+            if data.len() < 26 {
+                return "(op_msg)".to_string();
+            }
+            // First BSON element: type(1) at offset 25, key cstring at offset 26
+            let elem_type = data[25];
+            let key_start = 26usize;
+            let key_end = data[key_start..]
+                .iter()
+                .position(|&b| b == 0)
+                .map(|p| key_start + p)
+                .unwrap_or(data.len());
+            let cmd = String::from_utf8_lossy(&data[key_start..key_end]);
+            // If string type (0x02), read collection name that follows
+            if elem_type == 0x02 {
+                let val_start = key_end + 1;
+                if data.len() >= val_start + 5 {
+                    let str_len = u32::from_le_bytes([
+                        data[val_start], data[val_start+1],
+                        data[val_start+2], data[val_start+3],
+                    ]) as usize;
+                    let s = val_start + 4;
+                    let e = (s + str_len).min(data.len()).saturating_sub(1);
+                    let coll = String::from_utf8_lossy(&data[s..e]);
+                    return format!("{cmd} {coll}");
+                }
+            }
+            cmd.to_string()
+        }
+        2004 => {
+            // OP_QUERY (legacy): header(16) + flags(4) + collection cstring at offset 20
+            if data.len() <= 20 {
+                return "(op_query)".to_string();
+            }
+            let end = data[20..]
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(data.len() - 20);
+            format!("query {}", String::from_utf8_lossy(&data[20..20 + end]))
+        }
+        _ => format!("(opcode={opcode})"),
+    }
+}
+
+/// MongoDB server responses: OP_REPLY reports numberReturned; OP_MSG carries an
+/// "ok" field in the BSON body (1.0 = success, 0.0 = command error).
+fn parse_mongodb_response(data: &[u8]) -> String {
+    if data.len() < 16 {
+        return String::new();
+    }
+    let opcode = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
+    match opcode {
+        1 => {
+            // OP_REPLY: numberReturned at bytes 32-35
+            if data.len() >= 36 {
+                let n = u32::from_le_bytes([data[32], data[33], data[34], data[35]]);
+                format!("OP_REPLY docs={n}")
+            } else {
+                "OP_REPLY".to_string()
+            }
+        }
+        2013 => {
+            // OP_MSG: scan BSON body for "ok" double field (type 0x01)
+            // body starts at offset 21 (header 16 + flags 4 + kind 1)
+            if data.len() < 26 {
+                return "OP_MSG".to_string();
+            }
+            let body = &data[25..]; // skip bson_length(4) already included at offset 21
+            let mut i = 4usize; // skip bson_length
+            while i + 1 < body.len() {
+                let t = body[i];
+                i += 1;
+                let key_end = body[i..].iter().position(|&b| b == 0).unwrap_or(body.len() - i);
+                let key = &body[i..i + key_end];
+                i += key_end + 1;
+                match t {
+                    0x01 if key == b"ok" && i + 8 <= body.len() => {
+                        let v = f64::from_le_bytes(body[i..i+8].try_into().unwrap_or([0;8]));
+                        return if v == 1.0 { "ok".to_string() } else { "err".to_string() };
+                    }
+                    0x01 => i += 8,
+                    0x10 => i += 4,
+                    0x12 => i += 8,
+                    0x08 => i += 1,
+                    0x02 | 0x0D | 0x0E if i + 4 <= body.len() => {
+                        let l = u32::from_le_bytes([body[i], body[i+1], body[i+2], body[i+3]]) as usize;
+                        i += 4 + l;
+                    }
+                    _ => break,
+                }
+            }
+            "OP_MSG".to_string()
+        }
+        _ => format!("(opcode={opcode})"),
     }
 }
 

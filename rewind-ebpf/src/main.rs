@@ -268,12 +268,19 @@ fn try_capture_recv(ctx: ProbeContext) -> Result<(), i64> {
     // Redis:    RESP first byte (+/-/:/$/∗).
     // MySQL:    4-byte packet header (3-byte len LE + seq byte); seq==1 for the
     //           server's first response, followed by 0x00=OK/0xFF=ERR/0xFE=EOF.
+    // MongoDB:  16-byte wire header; opCode at bytes 12-15 (LE int32).
+    //           OP_REPLY = 1 (0x01 0x00 0x00 0x00)
+    //           OP_MSG   = 2013 (0xDD 0x07 0x00 0x00)
     let (proto_id, looks_like_db) = match data[0] {
         b'T' | b'D' | b'C' | b'Z' | b'E' | b'1' | b'2' | b'n' | b'I' => (0u8, true),
         b'+' | b'-' | b':' | b'$' | b'*' => (1u8, true),
         _ => {
             if data[3] == 1 && (data[4] == 0x00 || data[4] == 0xff || data[4] == 0xfe) {
                 (2u8, true) // MySQL
+            } else if (data[12] == 0x01 && data[13] == 0x00 && data[14] == 0x00 && data[15] == 0x00)
+                || (data[12] == 0xDD && data[13] == 0x07 && data[14] == 0x00 && data[15] == 0x00)
+            {
+                (3u8, true) // MongoDB OP_REPLY or OP_MSG
             } else {
                 (0u8, false)
             }
@@ -284,6 +291,7 @@ fn try_capture_recv(ctx: ProbeContext) -> Result<(), i64> {
         let dport: u16 = match proto_id {
             1 => 6379,
             2 => 3306,
+            3 => 27017,
             _ => 5432,
         };
         emit_db_event(&ctx, &data, captured_len, dport, proto_id, 1 /* response */);

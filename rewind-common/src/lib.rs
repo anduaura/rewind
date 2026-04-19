@@ -66,6 +66,7 @@ pub enum DbProtocol {
     Postgres = 0,
     Redis    = 1,
     MySQL    = 2,
+    MongoDB  = 3,
 }
 
 /// Emitted by the tcp_sendmsg / tcp_recvmsg probes for Postgres/Redis traffic.

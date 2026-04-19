@@ -71,7 +71,19 @@ Three crates in the repo:
 | `examples/docker-compose-demo` | Done | api + worker Flask services with Postgres + Redis; `make demo` wires everything |
 | `Makefile` | Done | build-ebpf → build-userspace → bench → demo targets |
 
-## MVP milestone
+## Roadmap
+
+Remaining milestones in priority order:
+
+| # | Milestone | Scope |
+|---|---|---|
+| 10 | **MongoDB wire protocol** | `DbProtocol::MongoDB`, port 27017, OP_MSG/OP_REPLY detection in kretprobe, BSON command name extraction |
+| 11 | **Minimum viable row snapshot** | Decode Postgres `RowDescription` + `DataRow` packets; surface column names + first row in `DbRecord.response` |
+| 12 | **gRPC capture** | HTTP/2 frame detection in `tcp_sendmsg`; extract `:path` from HEADERS frame; new `GrpcRecord` type |
+| 13 | **Kubernetes DaemonSet** | `k8s/` manifests: DaemonSet (privileged + hostPID), ServiceAccount, ClusterRole, ConfigMap |
+| 14 | **Jaeger export** | `rewind export --format jaeger`; convert spans to Jaeger JSON trace format |
+
+
 
 Get `rewind record` capturing live HTTP between two Docker Compose services and writing a valid `.rwd` file.
 
