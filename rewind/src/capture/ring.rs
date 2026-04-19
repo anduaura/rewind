@@ -24,7 +24,10 @@ pub struct RingBuffer {
 
 impl RingBuffer {
     pub fn new(max_events: usize) -> Self {
-        Self { inner: VecDeque::new(), max_events }
+        Self {
+            inner: VecDeque::new(),
+            max_events,
+        }
     }
 
     pub fn push(&mut self, event: Event) {
@@ -38,7 +41,8 @@ impl RingBuffer {
     /// Passing `Duration::MAX` returns every event in the buffer.
     pub fn drain_window(&self, window: Duration) -> Vec<Event> {
         match Instant::now().checked_sub(window) {
-            Some(cutoff) => self.inner
+            Some(cutoff) => self
+                .inner
                 .iter()
                 .filter(|(t, _)| *t >= cutoff)
                 .map(|(_, e)| e.clone())

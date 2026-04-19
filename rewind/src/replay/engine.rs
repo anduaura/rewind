@@ -55,10 +55,7 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
         })
         .context("snapshot contains no inbound trigger request")?;
 
-    println!(
-        "  trigger:  {} {}",
-        trigger.method, trigger.path
-    );
+    println!("  trigger:  {} {}", trigger.method, trigger.path);
     println!(
         "  mocking:  {} outbound responses",
         outbound_responses.len()
@@ -94,12 +91,16 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
 
     // ── 4. Bring up services ─────────────────────────────────────────────────
     println!("Starting services…");
-    docker_compose_up(&args.compose, &override_path)
-        .context("docker compose up failed")?;
+    docker_compose_up(&args.compose, &override_path).context("docker compose up failed")?;
 
     // ── 5. Wait for the trigger service to be healthy ────────────────────────
     let service = if trigger.service.is_empty() {
-        snapshot.services.first().map(|s| s.as_str()).unwrap_or("api").to_string()
+        snapshot
+            .services
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("api")
+            .to_string()
     } else {
         trigger.service.clone()
     };
@@ -107,11 +108,15 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
     let port = read_service_port(&args.compose, &service)
         .with_context(|| format!("could not find port for service '{service}'"))?;
 
-    wait_healthy(port).await
+    wait_healthy(port)
+        .await
         .with_context(|| format!("service '{service}' did not become healthy"))?;
 
     // ── 6. Re-execute the triggering request ─────────────────────────────────
-    println!("Re-executing: {} http://127.0.0.1:{}{}", trigger.method, port, trigger.path);
+    println!(
+        "Re-executing: {} http://127.0.0.1:{}{}",
+        trigger.method, port, trigger.path
+    );
 
     let url = format!("http://127.0.0.1:{}{}", port, trigger.path);
     let client = reqwest::Client::builder()
@@ -119,15 +124,17 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
         .build()?;
 
     let builder = match trigger.method.as_str() {
-        "POST"   => client.post(&url),
-        "PUT"    => client.put(&url),
+        "POST" => client.post(&url),
+        "PUT" => client.put(&url),
         "DELETE" => client.delete(&url),
-        "PATCH"  => client.patch(&url),
-        _        => client.get(&url),
+        "PATCH" => client.patch(&url),
+        _ => client.get(&url),
     };
     let builder = match &trigger.body {
-        Some(body) => builder.header("content-type", "application/json").body(body.clone()),
-        None       => builder,
+        Some(body) => builder
+            .header("content-type", "application/json")
+            .body(body.clone()),
+        None => builder,
     };
 
     let resp = builder.send().await.context("trigger request failed")?;
@@ -151,20 +158,14 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
 /// Convert a nanosecond Unix timestamp to libfaketime's `@YYYY-MM-DD HH:MM:SS` format.
 fn ns_to_faketime(ns: u64) -> String {
     let secs = (ns / 1_000_000_000) as i64;
-    let dt = Utc.timestamp_opt(secs, 0)
-        .single()
-        .unwrap_or_else(Utc::now);
+    let dt = Utc.timestamp_opt(secs, 0).single().unwrap_or_else(Utc::now);
     format!("@{}", dt.format("%Y-%m-%d %H:%M:%S"))
 }
 
 /// Write a docker-compose override that injects FAKETIME + HTTP_PROXY into
 /// every service so they use the recorded clock and route outbound HTTP through
 /// MockServer. libfaketime must be installed in the container images.
-fn write_compose_override(
-    compose: &Path,
-    faketime: &str,
-    mock_proxy: &str,
-) -> Result<PathBuf> {
+fn write_compose_override(compose: &Path, faketime: &str, mock_proxy: &str) -> Result<PathBuf> {
     let compose_str = std::fs::read_to_string(compose)
         .with_context(|| format!("cannot read {}", compose.display()))?;
     let doc: serde_yaml::Value = serde_yaml::from_str(&compose_str)?;
@@ -190,7 +191,7 @@ fn write_compose_override(
                     "LD_PRELOAD",
                     "/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1",
                 ),
-                ("HTTP_PROXY",  mock_proxy),
+                ("HTTP_PROXY", mock_proxy),
                 ("HTTPS_PROXY", mock_proxy),
                 // Exclude localhost from the proxy so intra-host calls still work.
                 ("NO_PROXY", "127.0.0.1,localhost"),
@@ -254,8 +255,7 @@ fn docker_compose_up(compose: &Path, override_file: &Path) -> Result<()> {
 /// Read the host-side port for a service from the compose file.
 /// Expects port entries in "HOST:CONTAINER" or plain "PORT" format.
 fn read_service_port(compose: &Path, service: &str) -> Result<u16> {
-    let doc: serde_yaml::Value =
-        serde_yaml::from_str(&std::fs::read_to_string(compose)?)?;
+    let doc: serde_yaml::Value = serde_yaml::from_str(&std::fs::read_to_string(compose)?)?;
 
     let ports = doc["services"][service]["ports"]
         .as_sequence()

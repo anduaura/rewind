@@ -21,11 +21,11 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Attach(args)  => rewind::capture::agent::attach(args).await,
-        Command::Record(args)  => rewind::capture::agent::run(args).await,
-        Command::Flush(args)   => rewind::capture::agent::flush(args).await,
-        Command::Replay(args)  => rewind::replay::engine::run(args).await,
+        Command::Attach(args) => rewind::capture::agent::attach(args).await,
+        Command::Record(args) => rewind::capture::agent::run(args).await,
+        Command::Flush(args) => rewind::capture::agent::flush(args).await,
+        Command::Replay(args) => rewind::replay::engine::run(args).await,
         Command::Inspect(args) => rewind::store::snapshot::inspect(args).await,
-        Command::Export(args)  => rewind::export::run(args).await,
+        Command::Export(args) => rewind::export::run(args).await,
     }
 }

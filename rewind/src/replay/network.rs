@@ -67,9 +67,7 @@ impl MockServer {
             queues: Arc::new(Mutex::new(queues)),
         };
 
-        let app = Router::new()
-            .fallback(handle_request)
-            .with_state(state);
+        let app = Router::new().fallback(handle_request).with_state(state);
 
         let addr = listener.local_addr()?;
         println!("  MockServer on {addr}");
@@ -83,9 +81,13 @@ async fn handle_request(State(state): State<MockState>, req: Request) -> Respons
     let path = req.uri().path().to_string();
     let key = format!("{method} {path}");
 
-    let record = state.queues.lock().unwrap()
-        .get_mut(&key)
-        .and_then(|q| if q.is_empty() { None } else { Some(q.remove(0)) });
+    let record = state.queues.lock().unwrap().get_mut(&key).and_then(|q| {
+        if q.is_empty() {
+            None
+        } else {
+            Some(q.remove(0))
+        }
+    });
 
     match record {
         Some(r) => {

@@ -48,7 +48,11 @@ pub async fn run(args: ExportArgs) -> Result<()> {
     match &args.output {
         Some(path) => {
             std::fs::write(path, &out)?;
-            eprintln!("Exported {count} spans ({}) to {}", args.format, path.display());
+            eprintln!(
+                "Exported {count} spans ({}) to {}",
+                args.format,
+                path.display()
+            );
         }
         None => println!("{}", out),
     }
@@ -111,8 +115,8 @@ fn event_to_span(event: &Event, idx: usize, default_trace_id: &str) -> Value {
             let kind = if h.direction == "inbound" { 2 } else { 3 }; // SERVER / CLIENT
 
             let mut attrs = vec![
-                attr_str("http.method",    &h.method),
-                attr_str("http.target",    &h.path),
+                attr_str("http.method", &h.method),
+                attr_str("http.target", &h.path),
                 attr_str("rewind.direction", &h.direction),
                 attr_str("rewind.service", &h.service),
             ];
@@ -136,10 +140,10 @@ fn event_to_span(event: &Event, idx: usize, default_trace_id: &str) -> Value {
         Event::Db(d) => {
             let span_id = span_id_from(d.timestamp_ns, idx);
             let mut attrs = vec![
-                attr_str("db.system",    &d.protocol),
+                attr_str("db.system", &d.protocol),
                 attr_str("db.statement", &d.query),
                 attr_str("rewind.service", &d.service),
-                attr_int("rewind.pid",   d.pid as i64),
+                attr_int("rewind.pid", d.pid as i64),
             ];
             if let Some(resp) = &d.response {
                 attrs.push(attr_str("db.response", resp));
@@ -158,9 +162,9 @@ fn event_to_span(event: &Event, idx: usize, default_trace_id: &str) -> Value {
         Event::Syscall(s) => {
             let span_id = span_id_from(s.timestamp_ns, idx);
             let attrs = vec![
-                attr_str("syscall.name",         &s.kind),
-                attr_str("syscall.return_value",  &s.return_value.to_string()),
-                attr_int("rewind.pid",            s.pid as i64),
+                attr_str("syscall.name", &s.kind),
+                attr_str("syscall.return_value", &s.return_value.to_string()),
+                attr_int("rewind.pid", s.pid as i64),
             ];
             span_json(
                 default_trace_id,
@@ -175,10 +179,10 @@ fn event_to_span(event: &Event, idx: usize, default_trace_id: &str) -> Value {
         Event::Grpc(g) => {
             let span_id = span_id_from(g.timestamp_ns, idx);
             let attrs = vec![
-                attr_str("rpc.system",  "grpc"),
-                attr_str("rpc.method",  &g.path),
+                attr_str("rpc.system", "grpc"),
+                attr_str("rpc.method", &g.path),
                 attr_str("rewind.service", &g.service),
-                attr_int("rewind.pid",  g.pid as i64),
+                attr_int("rewind.pid", g.pid as i64),
             ];
             span_json(
                 default_trace_id,
@@ -270,51 +274,85 @@ fn to_jaeger_json(snapshot: &Snapshot) -> Value {
     }])
 }
 
-fn event_to_jaeger_span(event: &Event, idx: usize, default_trace_id: &str, process_id: &str) -> Value {
+fn event_to_jaeger_span(
+    event: &Event,
+    idx: usize,
+    default_trace_id: &str,
+    process_id: &str,
+) -> Value {
     let (trace_id, span_id, op_name, start_us, tags) = match event {
         Event::Http(h) => {
-            let tid = h.trace_id.as_deref()
+            let tid = h
+                .trace_id
+                .as_deref()
                 .and_then(|tp| tp.split('-').nth(1))
                 .filter(|s| s.len() == 32)
                 .unwrap_or(default_trace_id)
                 .to_string();
             let mut tags = vec![
-                jtag_str("http.method",    &h.method),
-                jtag_str("http.url",       &h.path),
-                jtag_str("span.kind",      if h.direction == "inbound" { "server" } else { "client" }),
+                jtag_str("http.method", &h.method),
+                jtag_str("http.url", &h.path),
+                jtag_str(
+                    "span.kind",
+                    if h.direction == "inbound" {
+                        "server"
+                    } else {
+                        "client"
+                    },
+                ),
             ];
             if let Some(sc) = h.status_code {
                 tags.push(jtag_int("http.status_code", sc as i64));
             }
-            (tid, span_id_from(h.timestamp_ns, idx),
-             format!("{} {}", h.method, h.path), h.timestamp_ns / 1_000, tags)
+            (
+                tid,
+                span_id_from(h.timestamp_ns, idx),
+                format!("{} {}", h.method, h.path),
+                h.timestamp_ns / 1_000,
+                tags,
+            )
         }
         Event::Db(d) => {
             let tags = vec![
-                jtag_str("db.type",      &d.protocol),
+                jtag_str("db.type", &d.protocol),
                 jtag_str("db.statement", &d.query),
-                jtag_str("span.kind",    "client"),
+                jtag_str("span.kind", "client"),
             ];
-            (default_trace_id.to_string(), span_id_from(d.timestamp_ns, idx),
-             format!("{} query", d.protocol), d.timestamp_ns / 1_000, tags)
+            (
+                default_trace_id.to_string(),
+                span_id_from(d.timestamp_ns, idx),
+                format!("{} query", d.protocol),
+                d.timestamp_ns / 1_000,
+                tags,
+            )
         }
         Event::Grpc(g) => {
             let tags = vec![
                 jtag_str("rpc.system", "grpc"),
                 jtag_str("rpc.method", &g.path),
-                jtag_str("span.kind",  "client"),
+                jtag_str("span.kind", "client"),
             ];
-            (default_trace_id.to_string(), span_id_from(g.timestamp_ns, idx),
-             g.path.clone(), g.timestamp_ns / 1_000, tags)
+            (
+                default_trace_id.to_string(),
+                span_id_from(g.timestamp_ns, idx),
+                g.path.clone(),
+                g.timestamp_ns / 1_000,
+                tags,
+            )
         }
         Event::Syscall(s) => {
             let tags = vec![
-                jtag_str("syscall.name",         &s.kind),
-                jtag_str("syscall.return_value",  &s.return_value.to_string()),
-                jtag_str("span.kind",            "internal"),
+                jtag_str("syscall.name", &s.kind),
+                jtag_str("syscall.return_value", &s.return_value.to_string()),
+                jtag_str("span.kind", "internal"),
             ];
-            (default_trace_id.to_string(), span_id_from(s.timestamp_ns, idx),
-             format!("syscall/{}", s.kind), s.timestamp_ns / 1_000, tags)
+            (
+                default_trace_id.to_string(),
+                span_id_from(s.timestamp_ns, idx),
+                format!("syscall/{}", s.kind),
+                s.timestamp_ns / 1_000,
+                tags,
+            )
         }
     };
 

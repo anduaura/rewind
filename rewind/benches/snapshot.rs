@@ -81,13 +81,9 @@ fn bench_read(c: &mut Criterion) {
         let snapshot = make_snapshot(n);
         snapshot.write(&path).unwrap();
         group.throughput(Throughput::Elements(n as u64));
-        group.bench_with_input(
-            criterion::BenchmarkId::new("read", n),
-            &n,
-            |b, _| {
-                b.iter(|| black_box(Snapshot::read(&path)).unwrap());
-            },
-        );
+        group.bench_with_input(criterion::BenchmarkId::new("read", n), &n, |b, _| {
+            b.iter(|| black_box(Snapshot::read(&path)).unwrap());
+        });
     }
     group.finish();
 }

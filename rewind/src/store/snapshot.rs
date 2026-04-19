@@ -39,7 +39,7 @@ pub enum Event {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GrpcRecord {
     pub timestamp_ns: u64,
-    pub path: String,        // "/package.Service/Method"
+    pub path: String, // "/package.Service/Method"
     pub service: String,
     pub pid: u32,
 }
@@ -256,15 +256,34 @@ mod tests {
 pub async fn inspect(args: InspectArgs) -> Result<()> {
     let snapshot = Snapshot::read(&args.snapshot)?;
 
-    let http_count  = snapshot.events.iter().filter(|e| matches!(e, Event::Http(_))).count();
-    let db_count    = snapshot.events.iter().filter(|e| matches!(e, Event::Db(_))).count();
-    let sys_count   = snapshot.events.iter().filter(|e| matches!(e, Event::Syscall(_))).count();
-    let grpc_count  = snapshot.events.iter().filter(|e| matches!(e, Event::Grpc(_))).count();
+    let http_count = snapshot
+        .events
+        .iter()
+        .filter(|e| matches!(e, Event::Http(_)))
+        .count();
+    let db_count = snapshot
+        .events
+        .iter()
+        .filter(|e| matches!(e, Event::Db(_)))
+        .count();
+    let sys_count = snapshot
+        .events
+        .iter()
+        .filter(|e| matches!(e, Event::Syscall(_)))
+        .count();
+    let grpc_count = snapshot
+        .events
+        .iter()
+        .filter(|e| matches!(e, Event::Grpc(_)))
+        .count();
 
     println!("rewind snapshot v{}", snapshot.version);
     println!("recorded:  {} ns since epoch", snapshot.recorded_at_ns);
     println!("services:  {}", snapshot.services.join(", "));
-    println!("events:    {}  (http={http_count} grpc={grpc_count} db={db_count} syscall={sys_count})", snapshot.events.len());
+    println!(
+        "events:    {}  (http={http_count} grpc={grpc_count} db={db_count} syscall={sys_count})",
+        snapshot.events.len()
+    );
     println!();
 
     for event in &snapshot.events {

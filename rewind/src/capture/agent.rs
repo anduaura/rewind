@@ -45,9 +45,8 @@ type PendingDb = StdHashMap<(u32, String), VecDeque<DbRecord>>;
 // ── eBPF object ────────────────────────────────────────────────────────────────
 
 #[cfg(has_ebpf)]
-static REWIND_EBPF: &[u8] = include_bytes_aligned!(
-    "../../../rewind-ebpf/target/bpfel-unknown-none/release/rewind-ebpf"
-);
+static REWIND_EBPF: &[u8] =
+    include_bytes_aligned!("../../../rewind-ebpf/target/bpfel-unknown-none/release/rewind-ebpf");
 #[cfg(not(has_ebpf))]
 static REWIND_EBPF: &[u8] = &[];
 
@@ -75,10 +74,10 @@ pub async fn run(args: RecordArgs) -> Result<()> {
     attach_probes(&mut bpf)?;
     init_watched_ports(&mut bpf)?;
 
-    let http_task    = spawn_http_drain(&mut bpf, Arc::clone(&ring))?;
+    let http_task = spawn_http_drain(&mut bpf, Arc::clone(&ring))?;
     let syscall_task = spawn_syscall_drain(&mut bpf, Arc::clone(&ring))?;
-    let db_task      = spawn_db_drain(&mut bpf, Arc::clone(&ring), Arc::clone(&pending_db))?;
-    let grpc_task    = spawn_grpc_drain(&mut bpf, Arc::clone(&ring))?;
+    let db_task = spawn_db_drain(&mut bpf, Arc::clone(&ring), Arc::clone(&pending_db))?;
+    let grpc_task = spawn_grpc_drain(&mut bpf, Arc::clone(&ring))?;
 
     let services = args.services.clone();
     let socket_task = tokio::spawn(run_socket_listener(
@@ -97,7 +96,11 @@ pub async fn run(args: RecordArgs) -> Result<()> {
     socket_task.abort();
 
     let snapshot = build_snapshot(&ring, &pending_db, Duration::MAX, &services);
-    println!("\nFlushing {} events to {}", snapshot.events.len(), args.output.display());
+    println!(
+        "\nFlushing {} events to {}",
+        snapshot.events.len(),
+        args.output.display()
+    );
     snapshot.write(&args.output)?;
     println!("Done.");
     let _ = std::fs::remove_file(SOCKET_PATH);
@@ -108,7 +111,11 @@ pub async fn run(args: RecordArgs) -> Result<()> {
 /// Read a Docker Compose file and start recording all discovered services.
 pub async fn attach(args: AttachArgs) -> Result<()> {
     let services = detect_services(&args.compose)?;
-    println!("Detected {} service(s): {}", services.len(), services.join(", "));
+    println!(
+        "Detected {} service(s): {}",
+        services.len(),
+        services.join(", ")
+    );
     run(RecordArgs {
         services,
         output: args.output,
@@ -126,9 +133,7 @@ fn detect_services(compose_path: &Path) -> Result<Vec<String>> {
     let services = doc
         .get("services")
         .and_then(|s| s.as_mapping())
-        .ok_or_else(|| {
-            anyhow::anyhow!("no 'services' section in {}", compose_path.display())
-        })?;
+        .ok_or_else(|| anyhow::anyhow!("no 'services' section in {}", compose_path.display()))?;
     let names: Vec<String> = services
         .keys()
         .filter_map(|k| k.as_str().map(str::to_string))
@@ -206,11 +211,12 @@ fn attach_probes(bpf: &mut Ebpf) -> Result<()> {
 /// carry DB traffic. The probe skips expensive parsing for all other ports.
 fn init_watched_ports(bpf: &mut Ebpf) -> Result<()> {
     let mut map: HashMap<_, u32, u8> = HashMap::try_from(
-        bpf.map_mut("WATCHED_PORTS").context("WATCHED_PORTS map not found")?,
+        bpf.map_mut("WATCHED_PORTS")
+            .context("WATCHED_PORTS map not found")?,
     )?;
-    map.insert(5432u32,  0u8, 0)?; // Postgres
-    map.insert(6379u32,  1u8, 0)?; // Redis
-    map.insert(3306u32,  2u8, 0)?; // MySQL
+    map.insert(5432u32, 0u8, 0)?; // Postgres
+    map.insert(6379u32, 1u8, 0)?; // Redis
+    map.insert(3306u32, 2u8, 0)?; // MySQL
     map.insert(27017u32, 3u8, 0)?; // MongoDB
     Ok(())
 }
@@ -221,30 +227,27 @@ fn spawn_http_drain(
     bpf: &mut Ebpf,
     ring: Arc<Mutex<RingBuffer>>,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    drain_perf_array(
-        bpf, "HTTP_EVENTS", 1024, ring,
-        |buf| parse_http_event(buf).map(Event::Http),
-    )
+    drain_perf_array(bpf, "HTTP_EVENTS", 1024, ring, |buf| {
+        parse_http_event(buf).map(Event::Http)
+    })
 }
 
 fn spawn_syscall_drain(
     bpf: &mut Ebpf,
     ring: Arc<Mutex<RingBuffer>>,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    drain_perf_array(
-        bpf, "SYSCALL_EVENTS", 256, ring,
-        |buf| parse_syscall_event(buf).map(Event::Syscall),
-    )
+    drain_perf_array(bpf, "SYSCALL_EVENTS", 256, ring, |buf| {
+        parse_syscall_event(buf).map(Event::Syscall)
+    })
 }
 
 fn spawn_grpc_drain(
     bpf: &mut Ebpf,
     ring: Arc<Mutex<RingBuffer>>,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    drain_perf_array(
-        bpf, "GRPC_EVENTS", 512, ring,
-        |buf| parse_grpc_event(buf).map(Event::Grpc),
-    )
+    drain_perf_array(bpf, "GRPC_EVENTS", 512, ring, |buf| {
+        parse_grpc_event(buf).map(Event::Grpc)
+    })
 }
 
 fn spawn_db_drain(
@@ -253,7 +256,8 @@ fn spawn_db_drain(
     pending_db: Arc<Mutex<PendingDb>>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let mut perf_array = AsyncPerfEventArray::try_from(
-        bpf.take_map("DB_EVENTS").context("DB_EVENTS map not found")?,
+        bpf.take_map("DB_EVENTS")
+            .context("DB_EVENTS map not found")?,
     )?;
 
     let handle = tokio::spawn(async move {
@@ -261,7 +265,9 @@ fn spawn_db_drain(
         let mut tasks = Vec::new();
 
         for cpu_id in cpus {
-            let Ok(mut buf) = perf_array.open(cpu_id, Some(32)) else { continue };
+            let Ok(mut buf) = perf_array.open(cpu_id, Some(32)) else {
+                continue;
+            };
             let ring = Arc::clone(&ring);
             let pending_db = Arc::clone(&pending_db);
 
@@ -270,7 +276,9 @@ fn spawn_db_drain(
                     .map(|_| BytesMut::with_capacity(512))
                     .collect::<Vec<_>>();
                 loop {
-                    let Ok(info) = buf.read_events(&mut buffers).await else { break };
+                    let Ok(info) = buf.read_events(&mut buffers).await else {
+                        break;
+                    };
                     for b in buffers.iter().take(info.read) {
                         correlate_db_buf(b, &ring, &pending_db);
                     }
@@ -308,8 +316,10 @@ where
         let mut tasks = Vec::new();
 
         for cpu_id in cpus {
-            let Ok(mut buf) = perf_array.open(cpu_id, Some(32)) else { continue };
-            let ring  = Arc::clone(&ring);
+            let Ok(mut buf) = perf_array.open(cpu_id, Some(32)) else {
+                continue;
+            };
+            let ring = Arc::clone(&ring);
             let parse = Arc::clone(&parse);
 
             tasks.push(tokio::spawn(async move {
@@ -317,7 +327,9 @@ where
                     .map(|_| BytesMut::with_capacity(buf_capacity))
                     .collect::<Vec<_>>();
                 loop {
-                    let Ok(info) = buf.read_events(&mut buffers).await else { break };
+                    let Ok(info) = buf.read_events(&mut buffers).await else {
+                        break;
+                    };
                     for b in buffers.iter().take(info.read) {
                         if let Ok(event) = parse(b) {
                             ring.lock().unwrap().push(event);
@@ -345,13 +357,17 @@ fn parse_http_event(buf: &BytesMut) -> Result<HttpRecord> {
     Ok(HttpRecord {
         timestamp_ns: raw.timestamp_ns,
         direction: match raw.direction {
-            Direction::Inbound  => "inbound",
+            Direction::Inbound => "inbound",
             Direction::Outbound => "outbound",
         }
         .to_string(),
         method: cstr_to_string(&raw.method),
         path: cstr_to_string(&raw.path),
-        status_code: if raw.status_code == 0 { None } else { Some(raw.status_code) },
+        status_code: if raw.status_code == 0 {
+            None
+        } else {
+            Some(raw.status_code)
+        },
         service: String::new(),
         trace_id: extract_traceparent(&raw.headers_raw),
         body: None,
@@ -365,9 +381,16 @@ fn extract_traceparent(headers_raw: &[u8; 128]) -> Option<String> {
     let lower = s.to_ascii_lowercase();
     let pos = lower.find("traceparent:")?;
     let after = s[pos + 12..].trim_start_matches([' ', '\t']);
-    let end = after.find('\r').or_else(|| after.find('\n')).unwrap_or(after.len());
+    let end = after
+        .find('\r')
+        .or_else(|| after.find('\n'))
+        .unwrap_or(after.len());
     let value = after[..end].trim();
-    if value.is_empty() { None } else { Some(value.to_string()) }
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
 }
 
 fn parse_syscall_event(buf: &BytesMut) -> Result<SyscallRecord> {
@@ -381,7 +404,7 @@ fn parse_syscall_event(buf: &BytesMut) -> Result<SyscallRecord> {
         timestamp_ns: raw.timestamp_ns,
         kind: match raw.kind {
             rewind_common::SyscallKind::ClockGettime => "clock_gettime",
-            rewind_common::SyscallKind::Getrandom    => "getrandom",
+            rewind_common::SyscallKind::Getrandom => "getrandom",
         }
         .to_string(),
         return_value: raw.return_value,
@@ -473,17 +496,17 @@ fn correlate_db_buf(
     let payload = &raw.payload[..len];
     let protocol = match raw.protocol {
         DbProtocol::Postgres => "postgres",
-        DbProtocol::Redis    => "redis",
-        DbProtocol::MySQL    => "mysql",
-        DbProtocol::MongoDB  => "mongodb",
+        DbProtocol::Redis => "redis",
+        DbProtocol::MySQL => "mysql",
+        DbProtocol::MongoDB => "mongodb",
     };
 
     if raw.is_response == 0 {
         let query = match raw.protocol {
             DbProtocol::Postgres => parse_postgres_query(payload),
-            DbProtocol::Redis    => parse_redis_query(payload),
-            DbProtocol::MySQL    => parse_mysql_query(payload),
-            DbProtocol::MongoDB  => parse_mongodb_query(payload),
+            DbProtocol::Redis => parse_redis_query(payload),
+            DbProtocol::MySQL => parse_mysql_query(payload),
+            DbProtocol::MongoDB => parse_mongodb_query(payload),
         };
         let record = DbRecord {
             timestamp_ns: raw.timestamp_ns,
@@ -502,9 +525,9 @@ fn correlate_db_buf(
     } else {
         let response_text = match raw.protocol {
             DbProtocol::Postgres => parse_postgres_response(payload),
-            DbProtocol::Redis    => parse_redis_response(payload),
-            DbProtocol::MySQL    => parse_mysql_response(payload),
-            DbProtocol::MongoDB  => parse_mongodb_response(payload),
+            DbProtocol::Redis => parse_redis_response(payload),
+            DbProtocol::MySQL => parse_mysql_response(payload),
+            DbProtocol::MongoDB => parse_mongodb_response(payload),
         };
         let completed = pending
             .lock()
@@ -561,7 +584,10 @@ fn parse_mysql_query(data: &[u8]) -> String {
         return format!("(raw {} bytes)", data.len());
     }
     match data[4] {
-        0x03 | 0x16 => String::from_utf8_lossy(&data[5..]).trim_end_matches('\0').trim().to_string(),
+        0x03 | 0x16 => String::from_utf8_lossy(&data[5..])
+            .trim_end_matches('\0')
+            .trim()
+            .to_string(),
         cmd => format!("(cmd=0x{cmd:02x} {} bytes)", data.len()),
     }
 }
@@ -581,7 +607,9 @@ fn parse_mysql_response(data: &[u8]) -> String {
             // error code (2 bytes LE) + '#' + sqlstate (5) + message
             let code = u16::from_le_bytes([data[5], data[6]]);
             let msg_start = 13; // skip '#' + sqlstate
-            let msg = String::from_utf8_lossy(&data[msg_start..]).trim_end_matches('\0').to_string();
+            let msg = String::from_utf8_lossy(&data[msg_start..])
+                .trim_end_matches('\0')
+                .to_string();
             format!("ERR {code}: {msg}")
         }
         0xff => "ERR".to_string(),
@@ -616,8 +644,10 @@ fn parse_mongodb_query(data: &[u8]) -> String {
                 let val_start = key_end + 1;
                 if data.len() >= val_start + 5 {
                     let str_len = u32::from_le_bytes([
-                        data[val_start], data[val_start+1],
-                        data[val_start+2], data[val_start+3],
+                        data[val_start],
+                        data[val_start + 1],
+                        data[val_start + 2],
+                        data[val_start + 3],
                     ]) as usize;
                     let s = val_start + 4;
                     let e = (s + str_len).min(data.len()).saturating_sub(1);
@@ -670,20 +700,28 @@ fn parse_mongodb_response(data: &[u8]) -> String {
             while i + 1 < body.len() {
                 let t = body[i];
                 i += 1;
-                let key_end = body[i..].iter().position(|&b| b == 0).unwrap_or(body.len() - i);
+                let key_end = body[i..]
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(body.len() - i);
                 let key = &body[i..i + key_end];
                 i += key_end + 1;
                 match t {
                     0x01 if key == b"ok" && i + 8 <= body.len() => {
-                        let v = f64::from_le_bytes(body[i..i+8].try_into().unwrap_or([0;8]));
-                        return if v == 1.0 { "ok".to_string() } else { "err".to_string() };
+                        let v = f64::from_le_bytes(body[i..i + 8].try_into().unwrap_or([0; 8]));
+                        return if v == 1.0 {
+                            "ok".to_string()
+                        } else {
+                            "err".to_string()
+                        };
                     }
                     0x01 => i += 8,
                     0x10 => i += 4,
                     0x12 => i += 8,
                     0x08 => i += 1,
                     0x02 | 0x0D | 0x0E if i + 4 <= body.len() => {
-                        let l = u32::from_le_bytes([body[i], body[i+1], body[i+2], body[i+3]]) as usize;
+                        let l = u32::from_le_bytes([body[i], body[i + 1], body[i + 2], body[i + 3]])
+                            as usize;
                         i += 4 + l;
                     }
                     _ => break,
@@ -718,9 +756,9 @@ fn parse_postgres_response(data: &[u8]) -> String {
         if pos + 5 > data.len() {
             break;
         }
-        let msg_len = u32::from_be_bytes([
-            data[pos+1], data[pos+2], data[pos+3], data[pos+4],
-        ]) as usize;
+        let msg_len =
+            u32::from_be_bytes([data[pos + 1], data[pos + 2], data[pos + 3], data[pos + 4]])
+                as usize;
         let body_start = pos + 5;
         let body_end = (pos + 1 + msg_len).min(data.len());
         let body = &data[body_start..body_end];
@@ -755,7 +793,7 @@ fn parse_postgres_response(data: &[u8]) -> String {
                     if i + 4 > body.len() {
                         break;
                     }
-                    let flen = i32::from_be_bytes([body[i], body[i+1], body[i+2], body[i+3]]);
+                    let flen = i32::from_be_bytes([body[i], body[i + 1], body[i + 2], body[i + 3]]);
                     i += 4;
                     if flen < 0 {
                         row_values.push("NULL".to_string());
@@ -775,9 +813,12 @@ fn parse_postgres_response(data: &[u8]) -> String {
                 while i < body.len() {
                     let code = body[i];
                     i += 1;
-                    let end = body[i..].iter().position(|&b| b == 0).unwrap_or(body.len() - i);
+                    let end = body[i..]
+                        .iter()
+                        .position(|&b| b == 0)
+                        .unwrap_or(body.len() - i);
                     if code == b'M' {
-                        return format!("ERR: {}", String::from_utf8_lossy(&body[i..i+end]));
+                        return format!("ERR: {}", String::from_utf8_lossy(&body[i..i + end]));
                     }
                     i += end + 1;
                 }
@@ -871,10 +912,10 @@ fn build_snapshot(
     }
 
     events.sort_by_key(|e| match e {
-        Event::Http(h)    => h.timestamp_ns,
+        Event::Http(h) => h.timestamp_ns,
         Event::Syscall(s) => s.timestamp_ns,
-        Event::Db(d)      => d.timestamp_ns,
-        Event::Grpc(g)    => g.timestamp_ns,
+        Event::Db(d) => d.timestamp_ns,
+        Event::Grpc(g) => g.timestamp_ns,
     });
 
     let mut snapshot = Snapshot::new(services.to_vec());
@@ -899,10 +940,12 @@ async fn run_socket_listener(
     };
 
     loop {
-        let Ok((stream, _)) = listener.accept().await else { continue };
-        let ring       = Arc::clone(&ring);
+        let Ok((stream, _)) = listener.accept().await else {
+            continue;
+        };
+        let ring = Arc::clone(&ring);
         let pending_db = Arc::clone(&pending_db);
-        let services   = services.clone();
+        let services = services.clone();
         tokio::spawn(async move {
             handle_flush_conn(stream, ring, pending_db, services).await;
         });
@@ -939,8 +982,12 @@ async fn handle_flush_conn(
     };
     let output_path = parts[2].to_string();
 
-    let snapshot =
-        build_snapshot(&ring, &pending_db, Duration::from_secs(window_secs), &services);
+    let snapshot = build_snapshot(
+        &ring,
+        &pending_db,
+        Duration::from_secs(window_secs),
+        &services,
+    );
     let count = snapshot.events.len();
 
     match snapshot.write(Path::new(&output_path)) {
@@ -1011,13 +1058,19 @@ mod tests {
     #[test]
     fn traceparent_found() {
         let h = make_headers("traceparent: 00-aabbcc-1122-01\r\naccept: */*\r\n");
-        assert_eq!(extract_traceparent(&h), Some("00-aabbcc-1122-01".to_string()));
+        assert_eq!(
+            extract_traceparent(&h),
+            Some("00-aabbcc-1122-01".to_string())
+        );
     }
 
     #[test]
     fn traceparent_case_insensitive() {
         let h = make_headers("Traceparent: 00-deadbeef-cafe-00\r\n");
-        assert_eq!(extract_traceparent(&h), Some("00-deadbeef-cafe-00".to_string()));
+        assert_eq!(
+            extract_traceparent(&h),
+            Some("00-deadbeef-cafe-00".to_string())
+        );
     }
 
     #[test]
@@ -1156,7 +1209,9 @@ mod tests {
 
     #[test]
     fn mysql_response_ok() {
-        let data = vec![0x07, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00];
+        let data = vec![
+            0x07, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+        ];
         assert_eq!(parse_mysql_response(&data), "OK");
     }
 
@@ -1197,7 +1252,7 @@ mod tests {
         data.extend_from_slice(&0u32.to_le_bytes()); // req_id
         data.extend_from_slice(&0u32.to_le_bytes()); // resp_to
         data.extend_from_slice(&2013u32.to_le_bytes()); // opcode
-        // flags(4)
+                                                        // flags(4)
         data.extend_from_slice(&0u32.to_le_bytes());
         // section_kind(1)
         data.push(0x00);
@@ -1293,7 +1348,10 @@ mod tests {
         body.extend_from_slice(b"relation does not exist\0");
         body.push(0);
         let data = pg_msg(b'E', &body);
-        assert_eq!(parse_postgres_response(&data), "ERR: relation does not exist");
+        assert_eq!(
+            parse_postgres_response(&data),
+            "ERR: relation does not exist"
+        );
     }
 
     #[test]
