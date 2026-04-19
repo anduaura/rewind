@@ -94,20 +94,43 @@ Three crates in the repo:
 | 20 | Kubernetes deployment guide (quickstart in README) | Done |
 | 21 | Integration test (end-to-end capture → replay against demo Compose stack) | Done |
 | 22 | eBPF overhead measurement + security/threat model documentation | Done |
-| 23 | Cut `v0.1.0` tag — trigger release binary + Docker image publish | Pending |
+| 23 | Cut `v0.1.0` tag — trigger release binary + Docker image publish | Done |
 | 24 | Health probe + Prometheus metrics endpoint (`/healthz`, `/metrics` on :9090) | Done |
 | 25 | PII scrubbing config (`--redact-headers`, path allow-list) | Done |
 | 26 | Multi-arch Docker image (amd64 + arm64) | Done |
 
+### Enterprise readiness milestones
 
+| # | Milestone | Status |
+|---|---|---|
+| 27 | Snapshot encryption at rest (`--encrypt-key`, AES-256-GCM via `age`) | Pending |
+| 28 | Audit log — structured JSON record of every capture, flush, and replay event | Pending |
+| 29 | Auto-trigger on alert — webhook endpoint so PagerDuty/Opsgenie can flush on incident open | Pending |
+| 30 | Central collection server (`rewind server`) — agents push snapshots over gRPC; replaces `kubectl cp` | Pending |
+| 31 | Snapshot retention + TTL cleanup — max-size and max-age policies to prevent disk fill on prod nodes | Pending |
+| 32 | RBAC / access control — token-based auth on the collection server; teams scoped to their own services | Pending |
+| 33 | VS Code extension — browse, inspect, and replay `.rwd` files directly from the editor | Pending |
+| 34 | Replay diff — compare two replays side-by-side; surface divergences in DB responses and timing | Pending |
+| 35 | SaaS collection plane — hosted server + web UI; teams push snapshots, share replay links, view timelines | Pending |
 
-Get `rewind record` capturing live HTTP between two Docker Compose services and writing a valid `.rwd` file.
+## Enterprise readiness goal
 
-Steps:
-1. Implement `rewind-ebpf/src/main.rs` — fill in `try_capture_send` to read from `msghdr`, extract HTTP method/path, emit `HttpEvent` to the perf array
-2. Implement `src/capture/agent.rs` — uncomment the eBPF loader, attach kprobes, spawn a tokio task draining the perf event ring buffer into `Vec<Event>`
-3. Write a two-service Docker Compose demo in `examples/docker-compose-demo/`
-4. Verify end-to-end: `rewind record --services api,worker` produces a readable `.rwd`
+The long-term goal is for rewind to be the standard incident replay tool at companies running Kubernetes in regulated industries (finance, healthcare, SaaS). That requires:
+
+**Security & compliance (milestones 27–28)**
+Snapshots capture real production traffic. Encryption at rest (milestone 27) satisfies data-at-rest requirements for SOC 2 / ISO 27001. The audit log (milestone 28) gives compliance teams a tamper-evident record of who captured what and when — required for PCI-DSS and HIPAA environments.
+
+**Operational integration (milestones 29–31)**
+Incident replay is only useful if it happens automatically. Milestone 29 wires rewind into existing alerting pipelines (PagerDuty, Opsgenie) so a snapshot is triggered the moment an alert fires — no manual `rewind flush` required. The central collection server (milestone 30) eliminates the `kubectl cp` step and enables cross-node snapshot correlation. Retention policies (milestone 31) make the agent safe to run permanently without ops overhead.
+
+**Team-scale access control (milestone 32)**
+In multi-team organisations, teams must only see snapshots from their own services. Milestone 32 adds token-scoped access on the collection server, making rewind safe to deploy org-wide.
+
+**Developer experience (milestones 33–34)**
+The closer replay is to the developer's existing workflow, the higher adoption. A VS Code extension (milestone 33) lets engineers open a `.rwd` file like a test result. Replay diff (milestone 34) unlocks regression use-cases — run the same snapshot against two versions of a service and see exactly what changed.
+
+**Commercial viability (milestone 35)**
+The open-source agent + CLI remains free. The SaaS collection plane is the commercial offering: hosted storage, web UI, team management, SSO. This funds continued development while keeping the capture layer open.
 
 ## Incident coverage (honest assessment)
 
