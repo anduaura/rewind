@@ -84,3 +84,18 @@ pub struct DbEvent {
 
 #[cfg(feature = "user")]
 unsafe impl aya::Pod for DbEvent {}
+
+/// Emitted by the tcp_sendmsg kprobe for gRPC (HTTP/2) calls.
+/// The path is the gRPC method path, e.g. `/helloworld.Greeter/SayHello`.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct GrpcEvent {
+    pub timestamp_ns: u64,
+    pub pid: u32,
+    pub _pad: u32,
+    pub path: [u8; 128],   // gRPC method path from :path pseudo-header
+    pub raw_frame: [u8; 128], // first 128 bytes of the HEADERS frame payload
+}
+
+#[cfg(feature = "user")]
+unsafe impl aya::Pod for GrpcEvent {}

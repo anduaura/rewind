@@ -32,8 +32,8 @@ use tokio::signal;
 
 use crate::capture::ring::RingBuffer;
 use crate::cli::{AttachArgs, FlushArgs, RecordArgs};
-use crate::store::snapshot::{DbRecord, Event, HttpRecord, Snapshot, SyscallRecord};
-use rewind_common::{DbEvent, DbProtocol, Direction, HttpEvent, SyscallEvent};
+use crate::store::snapshot::{DbRecord, Event, GrpcRecord, HttpRecord, Snapshot, SyscallRecord};
+use rewind_common::{DbEvent, DbProtocol, Direction, GrpcEvent, HttpEvent, SyscallEvent};
 
 const SOCKET_PATH: &str = "/tmp/rewind.sock";
 const RING_MAX_EVENTS: usize = 200_000;
@@ -77,6 +77,7 @@ pub async fn run(args: RecordArgs) -> Result<()> {
     let http_task    = spawn_http_drain(&mut bpf, Arc::clone(&ring))?;
     let syscall_task = spawn_syscall_drain(&mut bpf, Arc::clone(&ring))?;
     let db_task      = spawn_db_drain(&mut bpf, Arc::clone(&ring), Arc::clone(&pending_db))?;
+    let grpc_task    = spawn_grpc_drain(&mut bpf, Arc::clone(&ring))?;
 
     let services = args.services.clone();
     let socket_task = tokio::spawn(run_socket_listener(
@@ -91,6 +92,7 @@ pub async fn run(args: RecordArgs) -> Result<()> {
     http_task.abort();
     syscall_task.abort();
     db_task.abort();
+    grpc_task.abort();
     socket_task.abort();
 
     let snapshot = build_snapshot(&ring, &pending_db, Duration::MAX, &services);
@@ -231,6 +233,16 @@ fn spawn_syscall_drain(
     drain_perf_array::<SyscallEvent, _>(
         bpf, "SYSCALL_EVENTS", 256, ring,
         |buf| parse_syscall_event(buf).map(Event::Syscall),
+    )
+}
+
+fn spawn_grpc_drain(
+    bpf: &mut Bpf,
+    ring: Arc<Mutex<RingBuffer>>,
+) -> Result<tokio::task::JoinHandle<()>> {
+    drain_perf_array::<GrpcEvent, _>(
+        bpf, "GRPC_EVENTS", 512, ring,
+        |buf| parse_grpc_event(buf).map(Event::Grpc),
     )
 }
 
@@ -375,6 +387,70 @@ fn parse_syscall_event(buf: &BytesMut) -> Result<SyscallRecord> {
         return_value: raw.return_value,
         pid: raw.pid,
     })
+}
+
+fn parse_grpc_event(buf: &BytesMut) -> Result<GrpcRecord> {
+    if buf.len() < std::mem::size_of::<GrpcEvent>() {
+        anyhow::bail!("buffer too small for GrpcEvent");
+    }
+    let raw: GrpcEvent = unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const GrpcEvent) };
+    let path = extract_grpc_path(&raw.raw_frame);
+    Ok(GrpcRecord {
+        timestamp_ns: raw.timestamp_ns,
+        path,
+        service: String::new(),
+        pid: raw.pid,
+    })
+}
+
+/// Extract the gRPC method path from an HPACK-encoded HEADERS frame payload.
+///
+/// Strategy: scan for a literal `:path` header.  In HPACK, a literal header
+/// with indexed name uses index 4 (`:path`) encoded as 0x44 (literal
+/// incremental indexing) or 0x04 (literal without indexing).  The value is a
+/// length-prefixed string.  We also do a raw scan for the `/` prefix that all
+/// gRPC paths start with, as a fallback.
+fn extract_grpc_path(frame: &[u8; 128]) -> String {
+    // Fast path: scan for HPACK literal `:path` value.
+    // Index 4 = :path in the HPACK static table.
+    // Literal incremental indexing: 0x40 | 4 = 0x44
+    // Literal without indexing:     0x00 | 4 = 0x04
+    let mut i = 0usize;
+    while i < frame.len() {
+        if (frame[i] == 0x44 || frame[i] == 0x04) && i + 2 < frame.len() {
+            i += 1;
+            let huffman = frame[i] & 0x80 != 0;
+            let str_len = (frame[i] & 0x7F) as usize;
+            i += 1;
+            if i + str_len <= frame.len() && !huffman {
+                let s = String::from_utf8_lossy(&frame[i..i + str_len]).to_string();
+                if s.starts_with('/') {
+                    return s;
+                }
+            }
+            i += str_len;
+            continue;
+        }
+        i += 1;
+    }
+
+    // Fallback: scan for a raw `/` byte followed by printable ASCII — covers
+    // unencoded or partially decoded frames.
+    let end = frame.iter().position(|&b| b == 0).unwrap_or(128);
+    for j in 0..end {
+        if frame[j] == b'/' {
+            let path_end = frame[j..end]
+                .iter()
+                .position(|&b| b < 0x20 || b > 0x7E)
+                .map(|p| j + p)
+                .unwrap_or(end);
+            if path_end > j + 1 {
+                return String::from_utf8_lossy(&frame[j..path_end]).to_string();
+            }
+        }
+    }
+
+    "(unknown)".to_string()
 }
 
 // ── DB correlation ─────────────────────────────────────────────────────────────
@@ -798,6 +874,7 @@ fn build_snapshot(
         Event::Http(h)    => h.timestamp_ns,
         Event::Syscall(s) => s.timestamp_ns,
         Event::Db(d)      => d.timestamp_ns,
+        Event::Grpc(g)    => g.timestamp_ns,
     });
 
     let mut snapshot = Snapshot::new(services.to_vec());

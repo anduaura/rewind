@@ -24,7 +24,7 @@ use aya_ebpf::{
     maps::{HashMap, PerfEventArray},
     programs::{ProbeContext, TracePointContext},
 };
-use rewind_common::{DbEvent, DbProtocol, Direction, HttpEvent, SyscallEvent, SyscallKind};
+use rewind_common::{DbEvent, DbProtocol, Direction, GrpcEvent, HttpEvent, SyscallEvent, SyscallKind};
 
 #[map(name = "HTTP_EVENTS")]
 static mut HTTP_EVENTS: PerfEventArray<HttpEvent> = PerfEventArray::new(0);
@@ -34,6 +34,9 @@ static mut SYSCALL_EVENTS: PerfEventArray<SyscallEvent> = PerfEventArray::new(0)
 
 #[map(name = "DB_EVENTS")]
 static mut DB_EVENTS: PerfEventArray<DbEvent> = PerfEventArray::new(0);
+
+#[map(name = "GRPC_EVENTS")]
+static mut GRPC_EVENTS: PerfEventArray<GrpcEvent> = PerfEventArray::new(0);
 
 /// port → DbProtocol discriminant. Userspace seeds: 5432→0, 6379→1.
 #[map(name = "WATCHED_PORTS")]
@@ -102,6 +105,26 @@ fn try_capture_send(ctx: ProbeContext) -> Result<(), i64> {
         return Ok(());
     }
 
+    // ── gRPC (HTTP/2) ────────────────────────────────────────────────────────
+    // HTTP/2 client connection preface starts with b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".
+    // After the preface the client sends SETTINGS then HEADERS frames.
+    // We also catch mid-stream HEADERS frames directly (frame type 0x01, no preface).
+    // HTTP/2 frame header: 3-byte length + 1-byte type + 1-byte flags + 4-byte stream id.
+    if data.starts_with(b"PRI * HTTP/2") {
+        // Preface followed by frames — scan for the first HEADERS frame (type 0x01).
+        let preface_len = 24usize;
+        emit_grpc_event_from_frames(&ctx, &data, preface_len);
+        return Ok(());
+    }
+    // Mid-stream: bare HEADERS frame (type byte at offset 3 == 0x01, stream id > 0).
+    if data.len() >= 9 && data[3] == 0x01 {
+        let stream_id = u32::from_be_bytes([data[5] & 0x7F, data[6], data[7], data[8]]);
+        if stream_id > 0 {
+            emit_grpc_event_from_frames(&ctx, &data, 0);
+            return Ok(());
+        }
+    }
+
     // ── DB protocols ─────────────────────────────────────────────────────────
     // Read destination port from sock->sk_common.skc_dport (big-endian, offset 12).
     if sk != 0 {
@@ -116,6 +139,40 @@ fn try_capture_send(ctx: ProbeContext) -> Result<(), i64> {
     }
 
     Ok(())
+}
+
+/// Scan `data` starting at `offset` for HTTP/2 HEADERS frames (type 0x01) and
+/// emit a GrpcEvent.  The raw HEADERS payload is forwarded to userspace for
+/// HPACK decoding / path extraction.
+fn emit_grpc_event_from_frames(ctx: &ProbeContext, data: &[u8; 256], offset: usize) {
+    let mut pos = offset;
+    while pos + 9 <= 256 {
+        let frame_len = ((data[pos] as usize) << 16)
+            | ((data[pos + 1] as usize) << 8)
+            | (data[pos + 2] as usize);
+        let frame_type = data[pos + 3];
+        // type 0x01 = HEADERS, 0x04 = SETTINGS (skip), 0x09 = CONTINUATION
+        if frame_type == 0x01 || frame_type == 0x09 {
+            let payload_start = pos + 9;
+            let payload_end = (payload_start + frame_len).min(256);
+            let mut event = GrpcEvent {
+                timestamp_ns: unsafe { bpf_ktime_get_ns() },
+                pid: (unsafe { bpf_get_current_pid_tgid() } >> 32) as u32,
+                _pad: 0,
+                path: [0u8; 128],
+                raw_frame: [0u8; 128],
+            };
+            let copy_len = (payload_end - payload_start).min(128);
+            let mut k = 0usize;
+            while k < copy_len {
+                event.raw_frame[k] = data[payload_start + k];
+                k += 1;
+            }
+            unsafe { GRPC_EVENTS.output(ctx, &event, 0) };
+            return;
+        }
+        pos += 9 + frame_len;
+    }
 }
 
 fn emit_http_event(ctx: &ProbeContext, data: &[u8; 256], is_response: bool) {

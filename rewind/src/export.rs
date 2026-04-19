@@ -146,13 +146,30 @@ fn event_to_span(event: &Event, idx: usize, default_trace_id: &str) -> Value {
                 attr_str("syscall.return_value",  &s.return_value.to_string()),
                 attr_int("rewind.pid",            s.pid as i64),
             ];
-
             span_json(
                 default_trace_id,
                 &span_id,
                 &format!("syscall/{}", s.kind),
                 1, // INTERNAL
                 s.timestamp_ns,
+                attrs,
+            )
+        }
+
+        Event::Grpc(g) => {
+            let span_id = span_id_from(g.timestamp_ns, idx);
+            let attrs = vec![
+                attr_str("rpc.system",  "grpc"),
+                attr_str("rpc.method",  &g.path),
+                attr_str("rewind.service", &g.service),
+                attr_int("rewind.pid",  g.pid as i64),
+            ];
+            span_json(
+                default_trace_id,
+                &span_id,
+                &g.path,
+                3, // CLIENT
+                g.timestamp_ns,
                 attrs,
             )
         }
