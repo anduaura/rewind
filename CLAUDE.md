@@ -103,7 +103,7 @@ Three crates in the repo:
 
 | # | Milestone | Status |
 |---|---|---|
-| 27 | Snapshot encryption at rest (`--encrypt-key`, AES-256-GCM via `age`) | Pending |
+| 27 | Snapshot encryption at rest (`--key`, AES-256-GCM via `age`; `REWIND_SNAPSHOT_KEY` env) | Done |
 | 28 | Audit log — structured JSON record of every capture, flush, and replay event | Pending |
 | 29 | Auto-trigger on alert — webhook endpoint so PagerDuty/Opsgenie can flush on incident open | Pending |
 | 30 | Central collection server (`rewind server`) — agents push snapshots over gRPC; replaces `kubectl cp` | Pending |

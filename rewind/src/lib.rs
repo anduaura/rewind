@@ -14,6 +14,7 @@
 
 pub mod capture;
 pub mod cli;
+pub mod crypto;
 pub mod export;
 pub mod metrics;
 pub mod push;

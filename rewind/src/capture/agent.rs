@@ -63,6 +63,10 @@ pub async fn run(args: RecordArgs) -> Result<()> {
         println!("  bodies:   enabled");
     }
 
+    let snapshot_key: Arc<Option<String>> = Arc::new(crate::crypto::resolve_key(args.key.clone()));
+    if snapshot_key.is_some() {
+        println!("  encrypt:  enabled (age/AES-256-GCM)");
+    }
     let ring: Arc<Mutex<RingBuffer>> = Arc::new(Mutex::new(RingBuffer::new(RING_MAX_EVENTS)));
     let pending_db: Arc<Mutex<PendingDb>> = Arc::new(Mutex::new(StdHashMap::new()));
     let metrics: Arc<Metrics> = Arc::new(Metrics::new(RING_MAX_EVENTS));
@@ -116,6 +120,7 @@ pub async fn run(args: RecordArgs) -> Result<()> {
         Arc::clone(&pending_db),
         Arc::clone(&metrics),
         services.clone(),
+        Arc::clone(&snapshot_key),
     ));
 
     // Periodically sync ring buffer size into metrics.
@@ -146,7 +151,7 @@ pub async fn run(args: RecordArgs) -> Result<()> {
         snapshot.events.len(),
         args.output.display()
     );
-    snapshot.write(&args.output)?;
+    snapshot.write(&args.output, snapshot_key.as_deref())?;
     println!("Done.");
     let _ = std::fs::remove_file(SOCKET_PATH);
 
@@ -167,6 +172,7 @@ pub async fn attach(args: AttachArgs) -> Result<()> {
         capture_bodies: args.capture_bodies,
         redact_headers: args.redact_headers,
         allow_paths: args.allow_paths,
+        key: args.key,
     })
     .await
 }
@@ -1155,6 +1161,7 @@ async fn run_socket_listener(
     pending_db: Arc<Mutex<PendingDb>>,
     metrics: Arc<Metrics>,
     services: Vec<String>,
+    snapshot_key: Arc<Option<String>>,
 ) {
     let _ = std::fs::remove_file(SOCKET_PATH);
     let listener = match UnixListener::bind(SOCKET_PATH) {
@@ -1173,8 +1180,9 @@ async fn run_socket_listener(
         let pending_db = Arc::clone(&pending_db);
         let metrics = Arc::clone(&metrics);
         let services = services.clone();
+        let key = Arc::clone(&snapshot_key);
         tokio::spawn(async move {
-            handle_flush_conn(stream, ring, pending_db, metrics, services).await;
+            handle_flush_conn(stream, ring, pending_db, metrics, services, key).await;
         });
     }
 }
@@ -1185,6 +1193,7 @@ async fn handle_flush_conn(
     pending_db: Arc<Mutex<PendingDb>>,
     metrics: Arc<Metrics>,
     services: Vec<String>,
+    snapshot_key: Arc<Option<String>>,
 ) {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -1218,7 +1227,7 @@ async fn handle_flush_conn(
     );
     let count = snapshot.events.len();
 
-    match snapshot.write(Path::new(&output_path)) {
+    match snapshot.write(Path::new(&output_path), snapshot_key.as_deref()) {
         Ok(()) => {
             metrics.inc_flushed();
             let _ = writer.write_all(format!("OK {count}\n").as_bytes()).await;

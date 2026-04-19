@@ -122,15 +122,27 @@ impl Snapshot {
         }
     }
 
-    pub fn write(&self, path: &Path) -> Result<()> {
-        let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, json)?;
+    pub fn write(&self, path: &Path, key: Option<&str>) -> Result<()> {
+        let json = serde_json::to_vec_pretty(self)?;
+        let data = match key {
+            Some(passphrase) => crate::crypto::encrypt(&json, passphrase)?,
+            None => json,
+        };
+        std::fs::write(path, data)?;
         Ok(())
     }
 
-    pub fn read(path: &Path) -> Result<Self> {
-        let json = std::fs::read_to_string(path)?;
-        let snapshot: Self = serde_json::from_str(&json)?;
+    pub fn read(path: &Path, key: Option<&str>) -> Result<Self> {
+        let raw = std::fs::read(path)?;
+        let json = if crate::crypto::is_encrypted(&raw) {
+            let passphrase = key.ok_or_else(|| {
+                anyhow::anyhow!("snapshot is encrypted — provide --key or set REWIND_SNAPSHOT_KEY")
+            })?;
+            crate::crypto::decrypt(&raw, passphrase)?
+        } else {
+            raw
+        };
+        let snapshot: Self = serde_json::from_slice(&json)?;
         Ok(snapshot)
     }
 }
@@ -180,9 +192,9 @@ mod tests {
     fn snapshot_write_read_roundtrip() {
         let tmp = std::env::temp_dir().join("rewind_test_snapshot.rwd");
         let original = sample_snapshot();
-        original.write(&tmp).expect("write failed");
+        original.write(&tmp, None).expect("write failed");
 
-        let loaded = Snapshot::read(&tmp).expect("read failed");
+        let loaded = Snapshot::read(&tmp, None).expect("read failed");
         std::fs::remove_file(&tmp).ok();
 
         assert_eq!(loaded.version, 1);
@@ -194,9 +206,9 @@ mod tests {
     fn snapshot_event_types_preserved() {
         let tmp = std::env::temp_dir().join("rewind_test_types.rwd");
         let original = sample_snapshot();
-        original.write(&tmp).expect("write failed");
+        original.write(&tmp, None).expect("write failed");
 
-        let loaded = Snapshot::read(&tmp).expect("read failed");
+        let loaded = Snapshot::read(&tmp, None).expect("read failed");
         std::fs::remove_file(&tmp).ok();
 
         assert!(matches!(loaded.events[0], Event::Http(_)));
@@ -209,9 +221,9 @@ mod tests {
     fn snapshot_http_fields_roundtrip() {
         let tmp = std::env::temp_dir().join("rewind_test_http.rwd");
         let original = sample_snapshot();
-        original.write(&tmp).expect("write failed");
+        original.write(&tmp, None).expect("write failed");
 
-        let loaded = Snapshot::read(&tmp).expect("read failed");
+        let loaded = Snapshot::read(&tmp, None).expect("read failed");
         std::fs::remove_file(&tmp).ok();
 
         if let Event::Http(h) = &loaded.events[0] {
@@ -228,9 +240,9 @@ mod tests {
     fn snapshot_db_fields_roundtrip() {
         let tmp = std::env::temp_dir().join("rewind_test_db.rwd");
         let original = sample_snapshot();
-        original.write(&tmp).expect("write failed");
+        original.write(&tmp, None).expect("write failed");
 
-        let loaded = Snapshot::read(&tmp).expect("read failed");
+        let loaded = Snapshot::read(&tmp, None).expect("read failed");
         std::fs::remove_file(&tmp).ok();
 
         if let Event::Db(d) = &loaded.events[1] {
@@ -244,7 +256,7 @@ mod tests {
 
     #[test]
     fn snapshot_read_nonexistent_file_errors() {
-        let result = Snapshot::read(&PathBuf::from("/nonexistent/path.rwd"));
+        let result = Snapshot::read(&PathBuf::from("/nonexistent/path.rwd"), None);
         assert!(result.is_err());
     }
 
@@ -257,7 +269,10 @@ mod tests {
 }
 
 pub async fn inspect(args: InspectArgs) -> Result<()> {
-    let snapshot = Snapshot::read(&args.snapshot)?;
+    let snapshot = Snapshot::read(
+        &args.snapshot,
+        crate::crypto::resolve_key(args.key).as_deref(),
+    )?;
 
     let http_count = snapshot
         .events

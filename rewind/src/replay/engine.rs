@@ -20,11 +20,12 @@ use anyhow::{Context, Result};
 use chrono::{TimeZone, Utc};
 
 use crate::cli::ReplayArgs;
+use crate::crypto;
 use crate::replay::network::MockServer;
 use crate::store::snapshot::{Event, HttpRecord, Snapshot};
 
 pub async fn run(args: ReplayArgs) -> Result<()> {
-    let snapshot = Snapshot::read(&args.snapshot)?;
+    let snapshot = Snapshot::read(&args.snapshot, crypto::resolve_key(args.key).as_deref())?;
 
     println!("rewind replay");
     println!("  snapshot: {}", args.snapshot.display());

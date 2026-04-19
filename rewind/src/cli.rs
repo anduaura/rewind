@@ -65,6 +65,10 @@ pub struct AttachArgs {
     /// Only capture traffic to these path prefixes (comma-separated; empty = all)
     #[arg(long, value_delimiter = ',')]
     pub allow_paths: Vec<String>,
+
+    /// Encrypt the snapshot at rest with this passphrase (overrides REWIND_SNAPSHOT_KEY)
+    #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
+    pub key: Option<String>,
 }
 
 #[derive(Args)]
@@ -89,6 +93,10 @@ pub struct RecordArgs {
     /// Only capture traffic to these path prefixes (comma-separated; empty = all)
     #[arg(long, value_delimiter = ',')]
     pub allow_paths: Vec<String>,
+
+    /// Encrypt the snapshot at rest with this passphrase (overrides REWIND_SNAPSHOT_KEY)
+    #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
+    pub key: Option<String>,
 }
 
 #[derive(Args)]
@@ -110,12 +118,20 @@ pub struct ReplayArgs {
     /// Docker Compose file to replay against
     #[arg(long, default_value = "docker-compose.yml")]
     pub compose: PathBuf,
+
+    /// Decryption passphrase for encrypted snapshots (overrides REWIND_SNAPSHOT_KEY)
+    #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
+    pub key: Option<String>,
 }
 
 #[derive(Args)]
 pub struct InspectArgs {
     /// Path to the .rwd snapshot file
     pub snapshot: PathBuf,
+
+    /// Decryption passphrase for encrypted snapshots (overrides REWIND_SNAPSHOT_KEY)
+    #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
+    pub key: Option<String>,
 }
 
 #[derive(Args)]
@@ -130,6 +146,10 @@ pub struct ExportArgs {
     /// Write output to file instead of stdout
     #[arg(long, short)]
     pub output: Option<PathBuf>,
+
+    /// Decryption passphrase for encrypted snapshots (overrides REWIND_SNAPSHOT_KEY)
+    #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
+    pub key: Option<String>,
 }
 
 #[derive(Args)]
