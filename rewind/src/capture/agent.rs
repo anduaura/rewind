@@ -66,7 +66,8 @@ pub async fn run(args: RecordArgs) -> Result<()> {
     let ring: Arc<Mutex<RingBuffer>> = Arc::new(Mutex::new(RingBuffer::new(RING_MAX_EVENTS)));
     let pending_db: Arc<Mutex<PendingDb>> = Arc::new(Mutex::new(StdHashMap::new()));
     let metrics: Arc<Metrics> = Arc::new(Metrics::new(RING_MAX_EVENTS));
-    let scrub: Arc<ScrubConfig> = Arc::new(ScrubConfig::new(&args.redact_headers, &args.allow_paths));
+    let scrub: Arc<ScrubConfig> =
+        Arc::new(ScrubConfig::new(&args.redact_headers, &args.allow_paths));
 
     if !args.allow_paths.is_empty() {
         println!("  paths:    {}", args.allow_paths.join(", "));
@@ -89,8 +90,12 @@ pub async fn run(args: RecordArgs) -> Result<()> {
     attach_probes(&mut bpf)?;
     init_watched_ports(&mut bpf)?;
 
-    let http_task =
-        spawn_http_drain(&mut bpf, Arc::clone(&ring), Arc::clone(&metrics), Arc::clone(&scrub))?;
+    let http_task = spawn_http_drain(
+        &mut bpf,
+        Arc::clone(&ring),
+        Arc::clone(&metrics),
+        Arc::clone(&scrub),
+    )?;
     let syscall_task = spawn_syscall_drain(&mut bpf, Arc::clone(&ring), Arc::clone(&metrics))?;
     let db_task = spawn_db_drain(
         &mut bpf,
@@ -98,8 +103,12 @@ pub async fn run(args: RecordArgs) -> Result<()> {
         Arc::clone(&pending_db),
         Arc::clone(&metrics),
     )?;
-    let grpc_task =
-        spawn_grpc_drain(&mut bpf, Arc::clone(&ring), Arc::clone(&metrics), Arc::clone(&scrub))?;
+    let grpc_task = spawn_grpc_drain(
+        &mut bpf,
+        Arc::clone(&ring),
+        Arc::clone(&metrics),
+        Arc::clone(&scrub),
+    )?;
 
     let services = args.services.clone();
     let socket_task = tokio::spawn(run_socket_listener(
