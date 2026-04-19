@@ -13,14 +13,15 @@
 // limitations under the License.
 
 use anyhow::{Context, Result};
+#[cfg(has_ebpf)]
+use aya::include_bytes_aligned;
 use aya::{
-    include_bytes_aligned,
     maps::{AsyncPerfEventArray, HashMap},
     programs::{KProbe, TracePoint},
     util::online_cpus,
-    Bpf, BpfLoader,
+    Ebpf, EbpfLoader,
 };
-use aya_log::BpfLogger;
+use aya_log::EbpfLogger;
 use bytes::BytesMut;
 use std::collections::{HashMap as StdHashMap, VecDeque};
 use std::path::Path;
@@ -63,11 +64,11 @@ pub async fn run(args: RecordArgs) -> Result<()> {
     let ring: Arc<Mutex<RingBuffer>> = Arc::new(Mutex::new(RingBuffer::new(RING_MAX_EVENTS)));
     let pending_db: Arc<Mutex<PendingDb>> = Arc::new(Mutex::new(StdHashMap::new()));
 
-    let mut bpf = BpfLoader::new()
+    let mut bpf = EbpfLoader::new()
         .load(REWIND_EBPF)
         .context("failed to load eBPF object — did you run `make build-ebpf`?")?;
 
-    if let Err(e) = BpfLogger::init(&mut bpf) {
+    if let Err(e) = EbpfLogger::init(&mut bpf) {
         eprintln!("warn: eBPF logger not available: {e}");
     }
 
@@ -165,7 +166,7 @@ pub async fn flush(args: FlushArgs) -> Result<()> {
 
 // ── eBPF setup ─────────────────────────────────────────────────────────────────
 
-fn attach_probes(bpf: &mut Bpf) -> Result<()> {
+fn attach_probes(bpf: &mut Ebpf) -> Result<()> {
     let prog: &mut KProbe = bpf
         .program_mut("tcp_sendmsg")
         .context("tcp_sendmsg program not found")?
@@ -203,7 +204,7 @@ fn attach_probes(bpf: &mut Bpf) -> Result<()> {
 
 /// Seed the WATCHED_PORTS map so the eBPF probe knows which destination ports
 /// carry DB traffic. The probe skips expensive parsing for all other ports.
-fn init_watched_ports(bpf: &mut Bpf) -> Result<()> {
+fn init_watched_ports(bpf: &mut Ebpf) -> Result<()> {
     let mut map: HashMap<_, u32, u8> = HashMap::try_from(
         bpf.map_mut("WATCHED_PORTS").context("WATCHED_PORTS map not found")?,
     )?;
@@ -217,37 +218,37 @@ fn init_watched_ports(bpf: &mut Bpf) -> Result<()> {
 // ── Drain task spawners ────────────────────────────────────────────────────────
 
 fn spawn_http_drain(
-    bpf: &mut Bpf,
+    bpf: &mut Ebpf,
     ring: Arc<Mutex<RingBuffer>>,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    drain_perf_array::<HttpEvent, _>(
+    drain_perf_array(
         bpf, "HTTP_EVENTS", 1024, ring,
         |buf| parse_http_event(buf).map(Event::Http),
     )
 }
 
 fn spawn_syscall_drain(
-    bpf: &mut Bpf,
+    bpf: &mut Ebpf,
     ring: Arc<Mutex<RingBuffer>>,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    drain_perf_array::<SyscallEvent, _>(
+    drain_perf_array(
         bpf, "SYSCALL_EVENTS", 256, ring,
         |buf| parse_syscall_event(buf).map(Event::Syscall),
     )
 }
 
 fn spawn_grpc_drain(
-    bpf: &mut Bpf,
+    bpf: &mut Ebpf,
     ring: Arc<Mutex<RingBuffer>>,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    drain_perf_array::<GrpcEvent, _>(
+    drain_perf_array(
         bpf, "GRPC_EVENTS", 512, ring,
         |buf| parse_grpc_event(buf).map(Event::Grpc),
     )
 }
 
 fn spawn_db_drain(
-    bpf: &mut Bpf,
+    bpf: &mut Ebpf,
     ring: Arc<Mutex<RingBuffer>>,
     pending_db: Arc<Mutex<PendingDb>>,
 ) -> Result<tokio::task::JoinHandle<()>> {
@@ -286,15 +287,14 @@ fn spawn_db_drain(
 
 /// Generic helper: opens a PerfEventArray by name, spawns one reader task per
 /// CPU, and pushes parsed events into the ring buffer via the provided parser.
-fn drain_perf_array<T, F>(
-    bpf: &mut Bpf,
+fn drain_perf_array<F>(
+    bpf: &mut Ebpf,
     map_name: &'static str,
     buf_capacity: usize,
     ring: Arc<Mutex<RingBuffer>>,
     parse: F,
 ) -> Result<tokio::task::JoinHandle<()>>
 where
-    T: aya::Pod,
     F: Fn(&BytesMut) -> Result<Event> + Send + Sync + 'static,
 {
     let mut perf_array = AsyncPerfEventArray::try_from(
@@ -441,7 +441,7 @@ fn extract_grpc_path(frame: &[u8; 128]) -> String {
         if frame[j] == b'/' {
             let path_end = frame[j..end]
                 .iter()
-                .position(|&b| b < 0x20 || b > 0x7E)
+                .position(|&b| !(0x20..=0x7E).contains(&b))
                 .map(|p| j + p)
                 .unwrap_or(end);
             if path_end > j + 1 {

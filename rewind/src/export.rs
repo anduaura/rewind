@@ -37,7 +37,7 @@ pub async fn run(args: ExportArgs) -> Result<()> {
             let count = doc.as_array().map(|a| a.len()).unwrap_or(0);
             (doc, count)
         }
-        "otlp" | _ => {
+        _ => {
             let doc = to_otlp_json(&snapshot);
             let count = span_count(&doc);
             (doc, count)
