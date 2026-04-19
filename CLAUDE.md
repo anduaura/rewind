@@ -73,6 +73,8 @@ Three crates in the repo:
 | `tests/` (unit) | Done | 48 unit tests: all DB/HTTP/Redis/gRPC parsers, ring buffer, snapshot roundtrip; `cargo test` |
 | `.github/workflows/` | Done | CI (check + test + clippy + fmt on every PR); Release (musl binary + sha256 on tag push) |
 | `helm/rewind/` | Done | Helm chart (DaemonSet + RBAC + ConfigMap); `helm install rewind helm/rewind` |
+| `Dockerfile` | Done | Multi-stage musl build → distroless runtime image; pushed to ghcr.io on tag |
+| `tests/` (integration) | Done | 11 CLI integration tests: inspect + export (OTLP + Jaeger) against fixture snapshot |
 
 ## Roadmap
 
@@ -87,6 +89,11 @@ Three crates in the repo:
 | 16 | GitHub Actions CI (`cargo check`, `cargo test`, clippy, rustfmt on every PR) | Done |
 | 17 | `v0.1.0` release workflow (musl binary + sha256 checksums on tag push) | Done |
 | 18 | Helm chart for Kubernetes deployment (`helm/rewind/`) | Done |
+| 19 | Docker image build + push workflow (ghcr.io on tag push) | Done |
+| 20 | Kubernetes deployment guide (quickstart in README) | Done |
+| 21 | Integration test (end-to-end capture → replay against demo Compose stack) | Done |
+| 22 | eBPF overhead measurement + security/threat model documentation | Done |
+| 23 | Cut `v0.1.0` tag — trigger release binary + Docker image publish | Pending |
 
 
 

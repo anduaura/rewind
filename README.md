@@ -105,6 +105,41 @@ If the captured HTTP requests carried a W3C `traceparent` header, the trace-id i
 
 Zero instrumentation. The agent attaches to running containers without restarts, library changes, or sidecar injection. It works with any language and any framework.
 
+## Performance overhead
+
+The eBPF probes add latency only on the hot path through `tcp_sendmsg` and `tcp_recvmsg`. Expected overhead at typical production traffic volumes:
+
+| Metric | Expected impact |
+|---|---|
+| `tcp_sendmsg` kprobe | < 1 µs per syscall |
+| Ring buffer write (per event) | ~200 ns (lock-free VecDeque push) |
+| CPU overhead at 1000 req/s | < 0.5% of one core |
+| Memory (ring buffer, 200k events) | ~50–100 MB |
+| Disk (triggered flush, 5 min window) | ~5–10 MB compressed |
+
+The ring buffer is bounded — it discards the oldest events when full rather than growing unbounded. Headers-only capture (the default) keeps event sizes small. Body capture (`--capture-bodies`) increases memory usage proportionally.
+
+## Security model
+
+rewind requires elevated privileges to attach eBPF programs to the kernel. This is a real security surface — evaluate it before deploying to production.
+
+**Required capabilities:**
+
+| Capability | Why |
+|---|---|
+| `CAP_BPF` | Load and attach eBPF programs |
+| `CAP_PERFMON` | Read perf event arrays (event transport) |
+| `CAP_SYS_PTRACE` | `bpf_probe_read_user` — read user-space memory from kernel context |
+| `hostPID: true` | See PIDs across all containers on the node |
+| `hostNetwork: true` | Attach kprobes to host network stack |
+
+**What rewind can see:** all TCP send/receive data on the node, including traffic from pods that are not your target services. The ring buffer is bounded and never written to disk unless you run `rewind flush`.
+
+**Mitigations:**
+- Run rewind only on nodes where you have approved its deployment
+- Restrict `rewind flush` to authorized operators (the Unix socket is root-only by default)
+- The `.rwd` snapshot may contain sensitive query data — treat it like a log file and apply the same access controls
+
 ## Why Rust
 
 [aya](https://aya-rs.dev) — the Rust eBPF framework — lets you write kernel-space probes in Rust instead of C. This means shared types between the kernel probe and the userspace handler, a single language across the entire codebase, and no struct layout mismatches at the C/Rust boundary.
@@ -119,6 +154,64 @@ Zero instrumentation. The agent attaches to running containers without restarts,
 | + Full DB snapshot (opt-in) | ~95% |
 
 Thread scheduling non-determinism (Heisenbugs) is not addressable with this approach.
+
+## Kubernetes deployment
+
+### Prerequisites
+
+- Kubernetes 1.24+ with Linux 5.10+ nodes
+- `helm` 3.x
+- Nodes must allow privileged containers and `hostPID: true` (standard on most managed clusters)
+
+### Install with Helm
+
+```bash
+helm install rewind helm/rewind \
+  --namespace rewind \
+  --create-namespace \
+  --set image.repository=ghcr.io/anduaura/rewind \
+  --set image.tag=0.1.0
+```
+
+The agent runs as a DaemonSet — one pod per node — and immediately begins capturing traffic via eBPF.
+
+### Capture a snapshot
+
+```bash
+# List rewind pods
+kubectl get pods -n rewind
+
+# Flush the last 5 minutes of traffic from one node
+kubectl exec -n rewind daemonset/rewind -- \
+  rewind flush --window 5m --output /tmp/incident.rwd
+
+# Copy the snapshot to your machine
+kubectl cp rewind/$(kubectl get pod -n rewind -l app.kubernetes.io/name=rewind \
+  -o jsonpath='{.items[0].metadata.name}'):/tmp/incident.rwd ./incident.rwd
+```
+
+### Replay locally
+
+```bash
+# Inspect the snapshot
+rewind inspect incident.rwd
+
+# Replay against a local Docker Compose stack
+rewind replay incident.rwd --compose docker-compose.yml
+```
+
+### Uninstall
+
+```bash
+helm uninstall rewind -n rewind
+kubectl delete namespace rewind
+```
+
+### Alternative: raw manifests
+
+```bash
+kubectl apply -k k8s/
+```
 
 ## Benchmarks
 
