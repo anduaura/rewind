@@ -103,6 +103,10 @@ pub struct ExportArgs {
     /// Path to the .rwd snapshot file
     pub snapshot: PathBuf,
 
+    /// Output format: otlp (default) or jaeger
+    #[arg(long, default_value = "otlp")]
+    pub format: String,
+
     /// Write output to file instead of stdout
     #[arg(long, short)]
     pub output: Option<PathBuf>,

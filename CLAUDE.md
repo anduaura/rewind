@@ -73,15 +73,15 @@ Three crates in the repo:
 
 ## Roadmap
 
-Remaining milestones in priority order:
+All planned milestones complete.
 
-| # | Milestone | Scope |
+| # | Milestone | Status |
 |---|---|---|
-| 10 | **MongoDB wire protocol** | `DbProtocol::MongoDB`, port 27017, OP_MSG/OP_REPLY detection in kretprobe, BSON command name extraction |
-| 11 | **Minimum viable row snapshot** | Decode Postgres `RowDescription` + `DataRow` packets; surface column names + first row in `DbRecord.response` |
-| 12 | **gRPC capture** | HTTP/2 frame detection in `tcp_sendmsg`; extract `:path` from HEADERS frame; new `GrpcRecord` type |
-| 13 | **Kubernetes DaemonSet** | `k8s/` manifests: DaemonSet (privileged + hostPID), ServiceAccount, ClusterRole, ConfigMap |
-| 14 | **Jaeger export** | `rewind export --format jaeger`; convert spans to Jaeger JSON trace format |
+| 10 | MongoDB wire protocol | Done |
+| 11 | Minimum viable row snapshot (Postgres DataRow decoding) | Done |
+| 12 | gRPC capture (HTTP/2 HEADERS frame + HPACK path extraction) | Done |
+| 13 | Kubernetes DaemonSet (`k8s/` manifests) | Done |
+| 14 | Jaeger export (`rewind export --format jaeger`) | Done |
 
 
 

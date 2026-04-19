@@ -12,11 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! OTLP JSON export — converts a .rwd snapshot to OpenTelemetry trace spans
-//! that can be piped to any OTEL collector.
+//! Trace export — converts a .rwd snapshot to OTLP JSON or Jaeger JSON.
 //!
+//! OTLP (default):
 //!   rewind export incident.rwd | curl -sX POST http://collector:4318/v1/traces \
 //!       -H 'Content-Type: application/json' -d @-
+//!
+//! Jaeger:
+//!   rewind export incident.rwd --format jaeger | curl -sX POST \
+//!       http://jaeger:14268/api/traces?format=json -H 'Content-Type: application/json' -d @-
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -26,13 +30,25 @@ use crate::store::snapshot::{Event, Snapshot};
 
 pub async fn run(args: ExportArgs) -> Result<()> {
     let snapshot = Snapshot::read(&args.snapshot)?;
-    let otlp = to_otlp_json(&snapshot);
-    let out = serde_json::to_string_pretty(&otlp)?;
 
+    let (doc, count) = match args.format.as_str() {
+        "jaeger" => {
+            let doc = to_jaeger_json(&snapshot);
+            let count = doc.as_array().map(|a| a.len()).unwrap_or(0);
+            (doc, count)
+        }
+        "otlp" | _ => {
+            let doc = to_otlp_json(&snapshot);
+            let count = span_count(&doc);
+            (doc, count)
+        }
+    };
+
+    let out = serde_json::to_string_pretty(&doc)?;
     match &args.output {
         Some(path) => {
             std::fs::write(path, &out)?;
-            eprintln!("Exported {} spans to {}", span_count(&otlp), path.display());
+            eprintln!("Exported {count} spans ({}) to {}", args.format, path.display());
         }
         None => println!("{}", out),
     }
@@ -212,4 +228,113 @@ fn attr_str(key: &str, value: &str) -> Value {
 
 fn attr_int(key: &str, value: i64) -> Value {
     json!({"key": key, "value": {"intValue": value.to_string()}})
+}
+
+// ── Jaeger JSON format ─────────────────────────────────────────────────────────
+//
+// Jaeger accepts a JSON envelope with one trace object per unique traceID.
+// https://www.jaegertracing.io/docs/1.55/apis/#thrift-over-http-deprecated
+//
+// Usage:
+//   rewind export incident.rwd --format jaeger | \
+//     curl -sX POST http://jaeger:14268/api/traces?format=json \
+//          -H 'Content-Type: application/json' -d @-
+
+fn to_jaeger_json(snapshot: &Snapshot) -> Value {
+    let default_trace_id = format!("{:032x}", snapshot.recorded_at_ns);
+    let process_id = "p1";
+
+    let spans: Vec<Value> = snapshot
+        .events
+        .iter()
+        .enumerate()
+        .map(|(idx, event)| event_to_jaeger_span(event, idx, &default_trace_id, process_id))
+        .collect();
+
+    // Group into a single trace object.
+    json!([{
+        "traceID": default_trace_id,
+        "spans": spans,
+        "processes": {
+            process_id: {
+                "serviceName": "rewind",
+                "tags": [
+                    {"key": "rewind.services", "type": "string",
+                     "value": snapshot.services.join(",")},
+                    {"key": "rewind.version", "type": "int64",
+                     "value": snapshot.version},
+                ]
+            }
+        },
+        "warnings": null
+    }])
+}
+
+fn event_to_jaeger_span(event: &Event, idx: usize, default_trace_id: &str, process_id: &str) -> Value {
+    let (trace_id, span_id, op_name, start_us, tags) = match event {
+        Event::Http(h) => {
+            let tid = h.trace_id.as_deref()
+                .and_then(|tp| tp.split('-').nth(1))
+                .filter(|s| s.len() == 32)
+                .unwrap_or(default_trace_id)
+                .to_string();
+            let mut tags = vec![
+                jtag_str("http.method",    &h.method),
+                jtag_str("http.url",       &h.path),
+                jtag_str("span.kind",      if h.direction == "inbound" { "server" } else { "client" }),
+            ];
+            if let Some(sc) = h.status_code {
+                tags.push(jtag_int("http.status_code", sc as i64));
+            }
+            (tid, span_id_from(h.timestamp_ns, idx),
+             format!("{} {}", h.method, h.path), h.timestamp_ns / 1_000, tags)
+        }
+        Event::Db(d) => {
+            let tags = vec![
+                jtag_str("db.type",      &d.protocol),
+                jtag_str("db.statement", &d.query),
+                jtag_str("span.kind",    "client"),
+            ];
+            (default_trace_id.to_string(), span_id_from(d.timestamp_ns, idx),
+             format!("{} query", d.protocol), d.timestamp_ns / 1_000, tags)
+        }
+        Event::Grpc(g) => {
+            let tags = vec![
+                jtag_str("rpc.system", "grpc"),
+                jtag_str("rpc.method", &g.path),
+                jtag_str("span.kind",  "client"),
+            ];
+            (default_trace_id.to_string(), span_id_from(g.timestamp_ns, idx),
+             g.path.clone(), g.timestamp_ns / 1_000, tags)
+        }
+        Event::Syscall(s) => {
+            let tags = vec![
+                jtag_str("syscall.name",         &s.kind),
+                jtag_str("syscall.return_value",  &s.return_value.to_string()),
+                jtag_str("span.kind",            "internal"),
+            ];
+            (default_trace_id.to_string(), span_id_from(s.timestamp_ns, idx),
+             format!("syscall/{}", s.kind), s.timestamp_ns / 1_000, tags)
+        }
+    };
+
+    json!({
+        "traceID":       trace_id,
+        "spanID":        span_id,
+        "operationName": op_name,
+        "startTime":     start_us,   // microseconds since epoch
+        "duration":      0,
+        "tags":          tags,
+        "logs":          [],
+        "processID":     process_id,
+        "warnings":      null
+    })
+}
+
+fn jtag_str(key: &str, value: &str) -> Value {
+    json!({"key": key, "type": "string", "value": value})
+}
+
+fn jtag_int(key: &str, value: i64) -> Value {
+    json!({"key": key, "type": "int64", "value": value})
 }
