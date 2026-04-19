@@ -619,38 +619,115 @@ fn parse_mongodb_response(data: &[u8]) -> String {
     }
 }
 
+/// Parse a Postgres server response buffer, which may contain several back-to-back
+/// messages in the 256-byte capture window.  For result sets we decode:
+///   T (RowDescription) → extract column names
+///   D (DataRow)        → decode field values for the first row
+///   C (CommandComplete) → return the completion tag (e.g. "SELECT 5")
+///
+/// This is best-effort: small result sets (≤256 bytes total) are fully decoded;
+/// larger ones surface only what fits in the capture window.
 fn parse_postgres_response(data: &[u8]) -> String {
     if data.is_empty() {
         return String::new();
     }
-    match data[0] {
-        b'C' if data.len() >= 5 => {
-            let text = &data[5..];
-            let end = text.iter().position(|&b| b == 0).unwrap_or(text.len());
-            String::from_utf8_lossy(&text[..end]).trim().to_string()
+
+    let mut col_names: Vec<String> = Vec::new();
+    let mut row_values: Vec<String> = Vec::new();
+    let mut completion_tag = String::new();
+    let mut pos = 0usize;
+
+    while pos < data.len() {
+        let msg_type = data[pos];
+        if pos + 5 > data.len() {
+            break;
         }
-        b'E' if data.len() >= 5 => {
-            let fields = &data[5..];
-            let mut i = 0usize;
-            while i < fields.len() {
-                let code = fields[i];
-                i += 1;
-                let len = fields[i..].iter().position(|&b| b == 0).unwrap_or(fields.len() - i);
-                if code == b'M' {
-                    return format!("ERR: {}", String::from_utf8_lossy(&fields[i..i + len]));
+        let msg_len = u32::from_be_bytes([
+            data[pos+1], data[pos+2], data[pos+3], data[pos+4],
+        ]) as usize;
+        let body_start = pos + 5;
+        let body_end = (pos + 1 + msg_len).min(data.len());
+        let body = &data[body_start..body_end];
+        pos = pos + 1 + msg_len;
+
+        match msg_type {
+            b'T' if body.len() >= 2 => {
+                // RowDescription: u16be field_count, then for each field:
+                //   name(cstring) + tableOID(4) + attrNum(2) + typeOID(4)
+                //   + typeSize(2) + typeMod(4) + format(2)  = 18 bytes of fixed fields
+                let field_count = u16::from_be_bytes([body[0], body[1]]) as usize;
+                let mut i = 2usize;
+                for _ in 0..field_count {
+                    let name_end = body[i..]
+                        .iter()
+                        .position(|&b| b == 0)
+                        .map(|p| i + p)
+                        .unwrap_or(body.len());
+                    col_names.push(String::from_utf8_lossy(&body[i..name_end]).to_string());
+                    i = name_end + 1 + 18; // skip null + fixed fields
+                    if i > body.len() {
+                        break;
+                    }
                 }
-                i += len + 1;
             }
-            "ERR".to_string()
+            b'D' if body.len() >= 2 && row_values.is_empty() => {
+                // DataRow: u16be field_count, then for each field:
+                //   i32be field_len (-1 = NULL) + field_data
+                let field_count = u16::from_be_bytes([body[0], body[1]]) as usize;
+                let mut i = 2usize;
+                for _ in 0..field_count {
+                    if i + 4 > body.len() {
+                        break;
+                    }
+                    let flen = i32::from_be_bytes([body[i], body[i+1], body[i+2], body[i+3]]);
+                    i += 4;
+                    if flen < 0 {
+                        row_values.push("NULL".to_string());
+                    } else {
+                        let end = (i + flen as usize).min(body.len());
+                        row_values.push(String::from_utf8_lossy(&body[i..end]).to_string());
+                        i += flen as usize;
+                    }
+                }
+            }
+            b'C' => {
+                let end = body.iter().position(|&b| b == 0).unwrap_or(body.len());
+                completion_tag = String::from_utf8_lossy(&body[..end]).trim().to_string();
+            }
+            b'E' => {
+                let mut i = 0usize;
+                while i < body.len() {
+                    let code = body[i];
+                    i += 1;
+                    let end = body[i..].iter().position(|&b| b == 0).unwrap_or(body.len() - i);
+                    if code == b'M' {
+                        return format!("ERR: {}", String::from_utf8_lossy(&body[i..i+end]));
+                    }
+                    i += end + 1;
+                }
+                return "ERR".to_string();
+            }
+            _ => {}
         }
-        b'Z' => "ReadyForQuery".to_string(),
-        b'T' => "RowDescription".to_string(),
-        b'D' => "DataRow".to_string(),
-        b'1' => "ParseComplete".to_string(),
-        b'2' => "BindComplete".to_string(),
-        b'n' => "NoData".to_string(),
-        b'I' => "EmptyQueryResponse".to_string(),
-        _ => format!("(response 0x{:02x})", data[0]),
+    }
+
+    // Compose the result string from whatever we decoded.
+    if !row_values.is_empty() {
+        let header = if col_names.is_empty() {
+            String::new()
+        } else {
+            format!("({}): ", col_names.join(", "))
+        };
+        let row = row_values.join(", ");
+        if !completion_tag.is_empty() {
+            format!("{header}{row} [{completion_tag}]")
+        } else {
+            format!("{header}{row}")
+        }
+    } else if !completion_tag.is_empty() {
+        completion_tag
+    } else {
+        format!("(response 0x{:02x})", data[0])
     }
 }
 
