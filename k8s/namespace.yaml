@@ -1,0 +1,6 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rewind
+  labels:
+    app.kubernetes.io/name: rewind

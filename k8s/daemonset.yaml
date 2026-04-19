@@ -1,0 +1,109 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: rewind
+  namespace: rewind
+  labels:
+    app.kubernetes.io/name: rewind
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rewind
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rewind
+    spec:
+      serviceAccountName: rewind
+      # eBPF requires access to the host PID and network namespaces so the
+      # probes see traffic from all pods on the node.
+      hostPID: true
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+
+      tolerations:
+        # Run on every node including control-plane nodes.
+        - operator: Exists
+          effect: NoSchedule
+        - operator: Exists
+          effect: NoExecute
+
+      initContainers:
+        # Ensure the output directory exists on the host before starting.
+        - name: mkdir-output
+          image: busybox:1.36
+          command: ["mkdir", "-p", "/host-output/snapshots"]
+          volumeMounts:
+            - name: host-output
+              mountPath: /host-output
+
+      containers:
+        - name: rewind
+          # Replace with your actual image, e.g. ghcr.io/anduaura/rewind:latest
+          image: anduaura/rewind:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - record
+            - --services
+            - ""   # empty → agent records all traffic; set to comma-separated names to filter
+            - --output
+            - /var/lib/rewind/snapshots/node-$(NODE_NAME).rwd
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: REWIND_RING_CAPACITY
+              valueFrom:
+                configMapKeyRef:
+                  name: rewind-config
+                  key: ring_buffer_capacity
+            - name: REWIND_SOCKET_PATH
+              valueFrom:
+                configMapKeyRef:
+                  name: rewind-config
+                  key: socket_path
+          securityContext:
+            privileged: true           # required for eBPF map creation and kprobe attachment
+            capabilities:
+              add:
+                - BPF                  # CAP_BPF  — load/attach eBPF programs
+                - PERFMON              # CAP_PERFMON — perf event arrays
+                - SYS_PTRACE           # CAP_SYS_PTRACE — read user-space memory (bpf_probe_read_user)
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: host-output
+              mountPath: /var/lib/rewind/snapshots
+            - name: host-proc
+              mountPath: /proc
+              readOnly: true
+            - name: host-sys
+              mountPath: /sys
+              readOnly: true
+            - name: host-debugfs
+              mountPath: /sys/kernel/debug
+
+      volumes:
+        - name: host-output
+          hostPath:
+            path: /var/lib/rewind
+            type: DirectoryOrCreate
+        - name: host-proc
+          hostPath:
+            path: /proc
+        - name: host-sys
+          hostPath:
+            path: /sys
+        - name: host-debugfs
+          hostPath:
+            path: /sys/kernel/debug

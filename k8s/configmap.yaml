@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rewind-config
+  namespace: rewind
+  labels:
+    app.kubernetes.io/name: rewind
+data:
+  # Comma-separated list of namespaces to watch.
+  # Leave empty to watch all namespaces.
+  watch_namespaces: ""
+
+  # Ring buffer capacity (number of events).
+  ring_buffer_capacity: "200000"
+
+  # Socket path for rewind flush IPC.
+  socket_path: "/tmp/rewind.sock"
+
+  # Snapshot output directory (mounted from the host or a PVC).
+  output_dir: "/var/lib/rewind/snapshots"
