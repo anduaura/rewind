@@ -39,6 +39,8 @@ pub enum Command {
     Inspect(InspectArgs),
     /// Export a .rwd snapshot to OTLP JSON (pipe to any OpenTelemetry collector)
     Export(ExportArgs),
+    /// Upload a .rwd snapshot to cloud object storage (s3://, gs://, az://)
+    Push(PushArgs),
 }
 
 #[derive(Args)]
@@ -128,4 +130,14 @@ pub struct ExportArgs {
     /// Write output to file instead of stdout
     #[arg(long, short)]
     pub output: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct PushArgs {
+    /// Path to the .rwd snapshot file
+    pub snapshot: PathBuf,
+
+    /// Destination URL: s3://bucket/key, gs://bucket/key, or az://container/key.
+    /// A trailing slash appends the snapshot filename automatically.
+    pub destination: String,
 }

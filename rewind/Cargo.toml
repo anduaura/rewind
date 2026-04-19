@@ -21,6 +21,7 @@ bytes = "1"
 chrono = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_yaml = "0.9"
+object_store = { version = "0.11", features = ["aws", "gcp", "azure"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

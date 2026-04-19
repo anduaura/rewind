@@ -113,7 +113,7 @@ Three crates in the repo:
 | 34 | Replay diff — compare two replays side-by-side; surface divergences in DB responses and timing | Pending |
 | 35 | SaaS collection plane — hosted server + web UI; teams push snapshots, share replay links, view timelines | Pending |
 | 36 | seccomp/AppArmor profile — replace `privileged: true` with minimal capabilities + seccomp profile | Done |
-| 37 | Cloud storage sink — `rewind push s3://\|gs://\|az://` for snapshot archival to object storage | Pending |
+| 37 | Cloud storage sink — `rewind push s3://\|gs://\|az://` for snapshot archival to object storage | Done |
 | 38 | Grafana dashboard bundle — pre-built dashboards for the `/metrics` Prometheus endpoint | Pending |
 | 39 | Kafka capture — eBPF producer/consumer wire protocol (port 9092) capture | Pending |
 | 40 | Package distribution — Homebrew tap + apt/deb + rpm packages for frictionless installation | Pending |

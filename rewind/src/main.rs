@@ -27,5 +27,6 @@ async fn main() -> Result<()> {
         Command::Replay(args) => rewind::replay::engine::run(args).await,
         Command::Inspect(args) => rewind::store::snapshot::inspect(args).await,
         Command::Export(args) => rewind::export::run(args).await,
+        Command::Push(args) => rewind::push::run(args).await,
     }
 }
