@@ -34,6 +34,7 @@ use tokio::signal;
 use crate::capture::ring::RingBuffer;
 use crate::cli::{AttachArgs, FlushArgs, RecordArgs};
 use crate::metrics::Metrics;
+use crate::scrub::ScrubConfig;
 use crate::store::snapshot::{DbRecord, Event, GrpcRecord, HttpRecord, Snapshot, SyscallRecord};
 use rewind_common::{DbEvent, DbProtocol, Direction, GrpcEvent, HttpEvent, SyscallEvent};
 
@@ -65,6 +66,11 @@ pub async fn run(args: RecordArgs) -> Result<()> {
     let ring: Arc<Mutex<RingBuffer>> = Arc::new(Mutex::new(RingBuffer::new(RING_MAX_EVENTS)));
     let pending_db: Arc<Mutex<PendingDb>> = Arc::new(Mutex::new(StdHashMap::new()));
     let metrics: Arc<Metrics> = Arc::new(Metrics::new(RING_MAX_EVENTS));
+    let scrub: Arc<ScrubConfig> = Arc::new(ScrubConfig::new(&args.redact_headers, &args.allow_paths));
+
+    if !args.allow_paths.is_empty() {
+        println!("  paths:    {}", args.allow_paths.join(", "));
+    }
 
     if let Err(e) = crate::metrics::serve(METRICS_ADDR, Arc::clone(&metrics)).await {
         eprintln!("warn: metrics server failed to start on {METRICS_ADDR}: {e}");
@@ -83,7 +89,8 @@ pub async fn run(args: RecordArgs) -> Result<()> {
     attach_probes(&mut bpf)?;
     init_watched_ports(&mut bpf)?;
 
-    let http_task = spawn_http_drain(&mut bpf, Arc::clone(&ring), Arc::clone(&metrics))?;
+    let http_task =
+        spawn_http_drain(&mut bpf, Arc::clone(&ring), Arc::clone(&metrics), Arc::clone(&scrub))?;
     let syscall_task = spawn_syscall_drain(&mut bpf, Arc::clone(&ring), Arc::clone(&metrics))?;
     let db_task = spawn_db_drain(
         &mut bpf,
@@ -91,7 +98,8 @@ pub async fn run(args: RecordArgs) -> Result<()> {
         Arc::clone(&pending_db),
         Arc::clone(&metrics),
     )?;
-    let grpc_task = spawn_grpc_drain(&mut bpf, Arc::clone(&ring), Arc::clone(&metrics))?;
+    let grpc_task =
+        spawn_grpc_drain(&mut bpf, Arc::clone(&ring), Arc::clone(&metrics), Arc::clone(&scrub))?;
 
     let services = args.services.clone();
     let socket_task = tokio::spawn(run_socket_listener(
@@ -148,6 +156,8 @@ pub async fn attach(args: AttachArgs) -> Result<()> {
         services,
         output: args.output,
         capture_bodies: args.capture_bodies,
+        redact_headers: args.redact_headers,
+        allow_paths: args.allow_paths,
     })
     .await
 }
@@ -255,11 +265,16 @@ fn spawn_http_drain(
     bpf: &mut Ebpf,
     ring: Arc<Mutex<RingBuffer>>,
     metrics: Arc<Metrics>,
+    scrub: Arc<ScrubConfig>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     drain_perf_array(bpf, "HTTP_EVENTS", 1024, ring, move |buf| {
-        let e = parse_http_event(buf).map(Event::Http)?;
+        let mut record = parse_http_event(buf)?;
+        scrub.scrub_headers(&mut record.headers);
+        if !scrub.path_allowed(&record.path) {
+            anyhow::bail!("path not in allow-list");
+        }
         metrics.inc_http();
-        Ok(e)
+        Ok(Event::Http(record))
     })
 }
 
@@ -279,11 +294,15 @@ fn spawn_grpc_drain(
     bpf: &mut Ebpf,
     ring: Arc<Mutex<RingBuffer>>,
     metrics: Arc<Metrics>,
+    scrub: Arc<ScrubConfig>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     drain_perf_array(bpf, "GRPC_EVENTS", 512, ring, move |buf| {
-        let e = parse_grpc_event(buf).map(Event::Grpc)?;
+        let record = parse_grpc_event(buf)?;
+        if !scrub.path_allowed(&record.path) {
+            anyhow::bail!("path not in allow-list");
+        }
         metrics.inc_grpc();
-        Ok(e)
+        Ok(Event::Grpc(record))
     })
 }
 
@@ -389,6 +408,27 @@ where
 
 // ── Event parsers ──────────────────────────────────────────────────────────────
 
+/// Parse HTTP headers from the raw fixed-size byte buffer captured by eBPF.
+/// The format is standard HTTP header lines: `Name: Value\r\n`.
+fn parse_raw_headers(raw: &[u8; 128]) -> Vec<(String, String)> {
+    let end = raw.iter().position(|&b| b == 0).unwrap_or(128);
+    let Ok(s) = std::str::from_utf8(&raw[..end]) else {
+        return Vec::new();
+    };
+    let mut headers = Vec::new();
+    for line in s.split('\n') {
+        let line = line.trim_end_matches('\r');
+        if let Some(colon) = line.find(':') {
+            let name = line[..colon].trim().to_string();
+            let value = line[colon + 1..].trim().to_string();
+            if !name.is_empty() {
+                headers.push((name, value));
+            }
+        }
+    }
+    headers
+}
+
 fn parse_http_event(buf: &BytesMut) -> Result<HttpRecord> {
     if buf.len() < std::mem::size_of::<HttpEvent>() {
         anyhow::bail!("buffer too small for HttpEvent");
@@ -412,6 +452,7 @@ fn parse_http_event(buf: &BytesMut) -> Result<HttpRecord> {
         service: String::new(),
         trace_id: extract_traceparent(&raw.headers_raw),
         body: None,
+        headers: parse_raw_headers(&raw.headers_raw),
     })
 }
 

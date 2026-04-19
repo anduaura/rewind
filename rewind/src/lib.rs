@@ -17,4 +17,5 @@ pub mod cli;
 pub mod export;
 pub mod metrics;
 pub mod replay;
+pub mod scrub;
 pub mod store;

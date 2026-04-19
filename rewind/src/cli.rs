@@ -54,6 +54,15 @@ pub struct AttachArgs {
     /// Capture request/response bodies (increases snapshot size significantly)
     #[arg(long)]
     pub capture_bodies: bool,
+
+    /// Header names to redact (comma-separated). Empty = default safe list
+    /// (authorization, cookie, set-cookie, x-api-key, x-auth-token, proxy-authorization)
+    #[arg(long, value_delimiter = ',')]
+    pub redact_headers: Vec<String>,
+
+    /// Only capture traffic to these path prefixes (comma-separated; empty = all)
+    #[arg(long, value_delimiter = ',')]
+    pub allow_paths: Vec<String>,
 }
 
 #[derive(Args)]
@@ -69,6 +78,15 @@ pub struct RecordArgs {
     /// Capture request/response bodies (increases snapshot size significantly)
     #[arg(long)]
     pub capture_bodies: bool,
+
+    /// Header names to redact (comma-separated). Empty = default safe list
+    /// (authorization, cookie, set-cookie, x-api-key, x-auth-token, proxy-authorization)
+    #[arg(long, value_delimiter = ',')]
+    pub redact_headers: Vec<String>,
+
+    /// Only capture traffic to these path prefixes (comma-separated; empty = all)
+    #[arg(long, value_delimiter = ',')]
+    pub allow_paths: Vec<String>,
 }
 
 #[derive(Args)]

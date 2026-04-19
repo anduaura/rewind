@@ -54,6 +54,8 @@ pub struct HttpRecord {
     pub service: String,
     pub trace_id: Option<String>,
     pub body: Option<String>,
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -149,6 +151,7 @@ mod tests {
             service: "api".to_string(),
             trace_id: Some("00-abc-def-01".to_string()),
             body: None,
+            headers: Vec::new(),
         }));
         s.events.push(Event::Db(DbRecord {
             timestamp_ns: 1_001_000,

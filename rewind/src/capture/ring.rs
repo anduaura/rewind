@@ -75,6 +75,7 @@ mod tests {
             service: "api".to_string(),
             trace_id: None,
             body: None,
+            headers: Vec::new(),
         })
     }
 
