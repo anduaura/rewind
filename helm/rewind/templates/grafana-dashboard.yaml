@@ -1,0 +1,20 @@
+{{- if .Values.grafana.dashboardEnabled }}
+# ConfigMap consumed by the Grafana sidecar (grafana/grafana-sidecar) when
+# sidecar.dashboards.enabled=true in the kube-prometheus-stack / Grafana Helm chart.
+# The label grafana_dashboard=1 tells the sidecar to import the JSON automatically.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Chart.Name }}-grafana-dashboard
+  namespace: {{ .Values.grafana.dashboardNamespace | default .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    grafana_dashboard: "1"
+    {{- with .Values.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  rewind-dashboard.json: |
+    {{- .Files.Get "files/rewind-dashboard.json" | nindent 4 }}
+{{- end }}

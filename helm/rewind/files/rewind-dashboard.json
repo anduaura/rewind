@@ -1,0 +1,213 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" },
+    { "type": "panel", "id": "timeseries", "name": "Time series", "version": "" },
+    { "type": "panel", "id": "stat",       "name": "Stat",        "version": "" },
+    { "type": "panel", "id": "gauge",      "name": "Gauge",       "version": "" }
+  ],
+  "title": "rewind — Incident Capture Agent",
+  "uid": "rewind-agent-v1",
+  "description": "Operational dashboard for the rewind eBPF capture agent. Tracks event throughput, ring buffer health, and snapshot flush activity per node.",
+  "tags": ["rewind", "ebpf", "incident-replay"],
+  "timezone": "browser",
+  "refresh": "15s",
+  "schemaVersion": 38,
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "label": "Node",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "query": "label_values(rewind_ring_buffer_capacity, instance)",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Events Captured (total)",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 50000 },
+            { "color": "red",    "value": 150000 }
+          ]}
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "sum(rewind_events_captured_total{instance=~\"$instance\"})",
+        "legendFormat": "total"
+      }]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Snapshots Flushed",
+      "gridPos": { "x": 6, "y": 0, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "fixed", "fixedColor": "blue" } } },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "sum(rewind_snapshots_flushed_total{instance=~\"$instance\"})",
+        "legendFormat": "flushed"
+      }]
+    },
+    {
+      "id": 3,
+      "type": "gauge",
+      "title": "Ring Buffer Utilization",
+      "gridPos": { "x": 10, "y": 0, "w": 5, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdLabels": false },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0, "max": 1,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green",  "value": null },
+            { "color": "yellow", "value": 0.70 },
+            { "color": "red",    "value": 0.90 }
+          ]}
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "avg(rewind_ring_buffer_utilization{instance=~\"$instance\"})",
+        "legendFormat": "utilization"
+      }]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Ring Buffer Size",
+      "gridPos": { "x": 15, "y": 0, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "sum(rewind_ring_buffer_size{instance=~\"$instance\"})",
+        "legendFormat": "events in buffer"
+      }]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Event Capture Rate by Type",
+      "description": "Rate of events captured per second, broken down by protocol.",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] } },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "lineWidth": 2 } } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "sum(rate(rewind_events_captured_total{type=\"http\",instance=~\"$instance\"}[1m]))",
+          "legendFormat": "HTTP"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "sum(rate(rewind_events_captured_total{type=\"db\",instance=~\"$instance\"}[1m]))",
+          "legendFormat": "DB"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "sum(rate(rewind_events_captured_total{type=\"grpc\",instance=~\"$instance\"}[1m]))",
+          "legendFormat": "gRPC"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "sum(rate(rewind_events_captured_total{type=\"syscall\",instance=~\"$instance\"}[1m]))",
+          "legendFormat": "Syscall"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Ring Buffer Fill Level",
+      "description": "Current number of events held in the in-memory ring buffer per node.",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] } },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "lineWidth": 2 } },
+        "overrides": [{
+          "matcher": { "id": "byName", "options": "capacity" },
+          "properties": [{ "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [8, 4] } }, { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+        }]
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "rewind_ring_buffer_size{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}}"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "rewind_ring_buffer_capacity{instance=~\"$instance\"}",
+          "legendFormat": "capacity"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Snapshot Flush Rate",
+      "description": "Rate of triggered snapshot flushes to disk per second.",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 6 },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "lineWidth": 2 } } },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "sum(rate(rewind_snapshots_flushed_total{instance=~\"$instance\"}[5m]))",
+        "legendFormat": "flushes/s"
+      }]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Ring Buffer Utilization %",
+      "description": "Buffer fill ratio across all nodes. >90% means events are being dropped; consider reducing traffic or increasing ringBufferCapacity.",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 6 },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "min": 0, "max": 1,
+          "custom": { "lineWidth": 2 },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green",  "value": null },
+            { "color": "yellow", "value": 0.70 },
+            { "color": "red",    "value": 0.90 }
+          ]},
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "expr": "rewind_ring_buffer_utilization{instance=~\"$instance\"}",
+        "legendFormat": "{{instance}}"
+      }]
+    }
+  ]
+}

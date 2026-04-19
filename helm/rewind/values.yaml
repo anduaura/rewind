@@ -77,3 +77,12 @@ securityContext:
 seccompSetup:
   enabled: false  # set to true when using seccompProfile.type: Localhost
   image: busybox:1.36
+
+# Grafana dashboard auto-import via the Grafana sidecar.
+# Requires kube-prometheus-stack (or standalone Grafana) with
+# sidecar.dashboards.enabled=true watching the release namespace.
+grafana:
+  dashboardEnabled: false
+  # Namespace where the Grafana sidecar watches for ConfigMaps.
+  # Defaults to the release namespace if left empty.
+  dashboardNamespace: ""
