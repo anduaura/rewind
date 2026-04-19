@@ -1,0 +1,37 @@
+image:
+  repository: ghcr.io/anduaura/rewind
+  tag: ""  # defaults to Chart appVersion
+  pullPolicy: IfNotPresent
+
+# Comma-separated list of service names to record.
+# Empty string records all traffic on the node.
+services: ""
+
+# Output path on the host where .rwd snapshots are written.
+outputDir: /var/lib/rewind/snapshots
+
+# Ring buffer capacity (number of events retained in memory per node).
+ringBufferCapacity: "200000"
+
+# Unix socket path used by `rewind flush`.
+socketPath: /tmp/rewind.sock
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Tolerations — default: run on every node including control-plane.
+tolerations:
+  - operator: Exists
+    effect: NoSchedule
+  - operator: Exists
+    effect: NoExecute
+
+nodeSelector: {}
+
+# Additional labels to add to all resources.
+extraLabels: {}

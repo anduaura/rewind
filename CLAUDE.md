@@ -70,10 +70,11 @@ Three crates in the repo:
 | `benches/` | Done | criterion benchmarks for ring buffer (push/drain) and snapshot I/O (read/write); `make bench` |
 | `examples/docker-compose-demo` | Done | api + worker Flask services with Postgres + Redis; `make demo` wires everything |
 | `Makefile` | Done | build-ebpf → build-userspace → bench → demo targets |
+| `tests/` (unit) | Done | 48 unit tests: all DB/HTTP/Redis/gRPC parsers, ring buffer, snapshot roundtrip; `cargo test` |
+| `.github/workflows/` | Done | CI (check + test + clippy + fmt on every PR); Release (musl binary + sha256 on tag push) |
+| `helm/rewind/` | Done | Helm chart (DaemonSet + RBAC + ConfigMap); `helm install rewind helm/rewind` |
 
 ## Roadmap
-
-All planned milestones complete.
 
 | # | Milestone | Status |
 |---|---|---|
@@ -82,6 +83,10 @@ All planned milestones complete.
 | 12 | gRPC capture (HTTP/2 HEADERS frame + HPACK path extraction) | Done |
 | 13 | Kubernetes DaemonSet (`k8s/` manifests) | Done |
 | 14 | Jaeger export (`rewind export --format jaeger`) | Done |
+| 15 | Test suite (unit tests for parsers + snapshot roundtrip; 48 tests, `cargo test`) | Done |
+| 16 | GitHub Actions CI (`cargo check`, `cargo test`, clippy, rustfmt on every PR) | Done |
+| 17 | `v0.1.0` release workflow (musl binary + sha256 checksums on tag push) | Done |
+| 18 | Helm chart for Kubernetes deployment (`helm/rewind/`) | Done |
 
 
 

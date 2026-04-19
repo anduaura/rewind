@@ -1,0 +1,16 @@
+rewind {{ .Chart.AppVersion }} installed as a DaemonSet in namespace {{ .Release.Namespace }}.
+
+The agent is now running on every node, capturing inter-service traffic via eBPF.
+
+To flush a snapshot from a node:
+  kubectl exec -n {{ .Release.Namespace }} daemonset/rewind -- \
+    rewind flush --window 5m --output /tmp/incident.rwd
+
+To copy the snapshot locally:
+  kubectl cp {{ .Release.Namespace }}/$(kubectl get pod -n {{ .Release.Namespace }} -l app.kubernetes.io/name=rewind -o name | head -1 | cut -d/ -f2):/tmp/incident.rwd ./incident.rwd
+
+To inspect it:
+  rewind inspect incident.rwd
+
+To replay locally:
+  rewind replay incident.rwd --compose docker-compose.yml

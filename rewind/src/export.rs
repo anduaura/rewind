@@ -83,7 +83,7 @@ fn to_otlp_json(snapshot: &Snapshot) -> Value {
             "resource": {
                 "attributes": [
                     attr_str("service.name",      "rewind"),
-                    attr_str("rewind.services",   snapshot.services.join(",")),
+                    attr_str("rewind.services",   &snapshot.services.join(",")),
                     attr_int("rewind.version",    snapshot.version as i64),
                 ]
             },

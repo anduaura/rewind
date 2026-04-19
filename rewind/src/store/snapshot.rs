@@ -133,6 +133,126 @@ impl Snapshot {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn sample_snapshot() -> Snapshot {
+        let mut s = Snapshot::new(vec!["api".to_string(), "worker".to_string()]);
+        s.events.push(Event::Http(HttpRecord {
+            timestamp_ns: 1_000_000,
+            direction: "inbound".to_string(),
+            method: "POST".to_string(),
+            path: "/checkout".to_string(),
+            status_code: Some(200),
+            service: "api".to_string(),
+            trace_id: Some("00-abc-def-01".to_string()),
+            body: None,
+        }));
+        s.events.push(Event::Db(DbRecord {
+            timestamp_ns: 1_001_000,
+            protocol: "postgres".to_string(),
+            query: "SELECT * FROM orders".to_string(),
+            response: Some("SELECT 1".to_string()),
+            service: "api".to_string(),
+            pid: 42,
+        }));
+        s.events.push(Event::Syscall(SyscallRecord {
+            timestamp_ns: 1_002_000,
+            kind: "clock_gettime".to_string(),
+            return_value: 0,
+            pid: 42,
+        }));
+        s.events.push(Event::Grpc(GrpcRecord {
+            timestamp_ns: 1_003_000,
+            path: "/payment.Service/Charge".to_string(),
+            service: "worker".to_string(),
+            pid: 99,
+        }));
+        s
+    }
+
+    #[test]
+    fn snapshot_write_read_roundtrip() {
+        let tmp = std::env::temp_dir().join("rewind_test_snapshot.rwd");
+        let original = sample_snapshot();
+        original.write(&tmp).expect("write failed");
+
+        let loaded = Snapshot::read(&tmp).expect("read failed");
+        std::fs::remove_file(&tmp).ok();
+
+        assert_eq!(loaded.version, 1);
+        assert_eq!(loaded.services, vec!["api", "worker"]);
+        assert_eq!(loaded.events.len(), 4);
+    }
+
+    #[test]
+    fn snapshot_event_types_preserved() {
+        let tmp = std::env::temp_dir().join("rewind_test_types.rwd");
+        let original = sample_snapshot();
+        original.write(&tmp).expect("write failed");
+
+        let loaded = Snapshot::read(&tmp).expect("read failed");
+        std::fs::remove_file(&tmp).ok();
+
+        assert!(matches!(loaded.events[0], Event::Http(_)));
+        assert!(matches!(loaded.events[1], Event::Db(_)));
+        assert!(matches!(loaded.events[2], Event::Syscall(_)));
+        assert!(matches!(loaded.events[3], Event::Grpc(_)));
+    }
+
+    #[test]
+    fn snapshot_http_fields_roundtrip() {
+        let tmp = std::env::temp_dir().join("rewind_test_http.rwd");
+        let original = sample_snapshot();
+        original.write(&tmp).expect("write failed");
+
+        let loaded = Snapshot::read(&tmp).expect("read failed");
+        std::fs::remove_file(&tmp).ok();
+
+        if let Event::Http(h) = &loaded.events[0] {
+            assert_eq!(h.method, "POST");
+            assert_eq!(h.path, "/checkout");
+            assert_eq!(h.status_code, Some(200));
+            assert_eq!(h.trace_id.as_deref(), Some("00-abc-def-01"));
+        } else {
+            panic!("expected Http event");
+        }
+    }
+
+    #[test]
+    fn snapshot_db_fields_roundtrip() {
+        let tmp = std::env::temp_dir().join("rewind_test_db.rwd");
+        let original = sample_snapshot();
+        original.write(&tmp).expect("write failed");
+
+        let loaded = Snapshot::read(&tmp).expect("read failed");
+        std::fs::remove_file(&tmp).ok();
+
+        if let Event::Db(d) = &loaded.events[1] {
+            assert_eq!(d.protocol, "postgres");
+            assert_eq!(d.query, "SELECT * FROM orders");
+            assert_eq!(d.response.as_deref(), Some("SELECT 1"));
+        } else {
+            panic!("expected Db event");
+        }
+    }
+
+    #[test]
+    fn snapshot_read_nonexistent_file_errors() {
+        let result = Snapshot::read(&PathBuf::from("/nonexistent/path.rwd"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn snapshot_new_sets_version_one() {
+        let s = Snapshot::new(vec![]);
+        assert_eq!(s.version, 1);
+        assert_eq!(s.events.len(), 0);
+    }
+}
+
 pub async fn inspect(args: InspectArgs) -> Result<()> {
     let snapshot = Snapshot::read(&args.snapshot)?;
 

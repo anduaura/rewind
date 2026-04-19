@@ -43,11 +43,11 @@ type PendingDb = StdHashMap<(u32, String), VecDeque<DbRecord>>;
 
 // ── eBPF object ────────────────────────────────────────────────────────────────
 
-#[cfg(not(test))]
+#[cfg(has_ebpf)]
 static REWIND_EBPF: &[u8] = include_bytes_aligned!(
     "../../../rewind-ebpf/target/bpfel-unknown-none/release/rewind-ebpf"
 );
-#[cfg(test)]
+#[cfg(not(has_ebpf))]
 static REWIND_EBPF: &[u8] = &[];
 
 // ── Public entry points ────────────────────────────────────────────────────────
@@ -964,5 +964,356 @@ fn parse_window_secs(window: &str) -> Result<u64> {
         window
             .parse::<u64>()
             .map_err(|e| anyhow::anyhow!("invalid window '{window}': {e}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_window_secs ──────────────────────────────────────────────────────
+
+    #[test]
+    fn window_minutes() {
+        assert_eq!(parse_window_secs("5m").unwrap(), 300);
+    }
+
+    #[test]
+    fn window_seconds() {
+        assert_eq!(parse_window_secs("30s").unwrap(), 30);
+    }
+
+    #[test]
+    fn window_hours() {
+        assert_eq!(parse_window_secs("2h").unwrap(), 7200);
+    }
+
+    #[test]
+    fn window_bare_number() {
+        assert_eq!(parse_window_secs("120").unwrap(), 120);
+    }
+
+    #[test]
+    fn window_invalid() {
+        assert!(parse_window_secs("bad").is_err());
+    }
+
+    // ── extract_traceparent ───────────────────────────────────────────────────
+
+    fn make_headers(s: &str) -> [u8; 128] {
+        let mut buf = [0u8; 128];
+        let bytes = s.as_bytes();
+        let len = bytes.len().min(128);
+        buf[..len].copy_from_slice(&bytes[..len]);
+        buf
+    }
+
+    #[test]
+    fn traceparent_found() {
+        let h = make_headers("traceparent: 00-aabbcc-1122-01\r\naccept: */*\r\n");
+        assert_eq!(extract_traceparent(&h), Some("00-aabbcc-1122-01".to_string()));
+    }
+
+    #[test]
+    fn traceparent_case_insensitive() {
+        let h = make_headers("Traceparent: 00-deadbeef-cafe-00\r\n");
+        assert_eq!(extract_traceparent(&h), Some("00-deadbeef-cafe-00".to_string()));
+    }
+
+    #[test]
+    fn traceparent_missing() {
+        let h = make_headers("content-type: application/json\r\n");
+        assert_eq!(extract_traceparent(&h), None);
+    }
+
+    // ── parse_postgres_query ──────────────────────────────────────────────────
+
+    #[test]
+    fn postgres_query_simple() {
+        // b'Q' + u32be(len=5+sql) + sql + \0
+        let sql = b"SELECT 1";
+        let mut data = vec![b'Q', 0, 0, 0, (4 + sql.len() + 1) as u8];
+        data.extend_from_slice(sql);
+        data.push(0);
+        assert_eq!(parse_postgres_query(&data), "SELECT 1");
+    }
+
+    #[test]
+    fn postgres_query_extended_parse() {
+        let sql = b"SELECT $1";
+        let mut data = vec![b'P', 0, 0, 0, (4 + sql.len() + 1) as u8];
+        data.extend_from_slice(sql);
+        data.push(0);
+        assert_eq!(parse_postgres_query(&data), "SELECT $1");
+    }
+
+    #[test]
+    fn postgres_query_unknown_msg_type() {
+        let data = vec![b'X', 0, 0, 0, 4];
+        assert!(parse_postgres_query(&data).contains("msg_type=0x58"));
+    }
+
+    #[test]
+    fn postgres_query_too_short() {
+        let data = vec![b'Q', 0];
+        assert!(parse_postgres_query(&data).contains("raw"));
+    }
+
+    // ── parse_redis_query ─────────────────────────────────────────────────────
+
+    #[test]
+    fn redis_query_resp_array() {
+        let data = b"*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n";
+        assert_eq!(parse_redis_query(data), "SET foo bar");
+    }
+
+    #[test]
+    fn redis_query_inline() {
+        let data = b"PING\r\n";
+        assert_eq!(parse_redis_query(data), "PING");
+    }
+
+    #[test]
+    fn redis_query_empty() {
+        assert_eq!(parse_redis_query(b""), "");
+    }
+
+    // ── parse_redis_response ──────────────────────────────────────────────────
+
+    #[test]
+    fn redis_response_simple_string() {
+        assert_eq!(parse_redis_response(b"+OK\r\n"), "OK");
+    }
+
+    #[test]
+    fn redis_response_error() {
+        assert_eq!(
+            parse_redis_response(b"-ERR unknown command\r\n"),
+            "ERR: ERR unknown command"
+        );
+    }
+
+    #[test]
+    fn redis_response_integer() {
+        assert_eq!(parse_redis_response(b":42\r\n"), "(integer) 42");
+    }
+
+    #[test]
+    fn redis_response_bulk_string() {
+        assert_eq!(parse_redis_response(b"$5\r\nhello\r\n"), "hello");
+    }
+
+    #[test]
+    fn redis_response_nil_bulk() {
+        assert_eq!(parse_redis_response(b"$-1\r\n"), "(nil)");
+    }
+
+    #[test]
+    fn redis_response_array() {
+        assert_eq!(parse_redis_response(b"*2\r\n$3\r\nfoo\r\n"), "(array)");
+    }
+
+    // ── parse_mysql_query ─────────────────────────────────────────────────────
+
+    #[test]
+    fn mysql_query_com_query() {
+        // 3-byte LE len + seq(1) + 0x03 + sql
+        let sql = b"SELECT 1";
+        let pkt_len = (1 + sql.len()) as u32;
+        let mut data = vec![
+            (pkt_len & 0xff) as u8,
+            ((pkt_len >> 8) & 0xff) as u8,
+            ((pkt_len >> 16) & 0xff) as u8,
+            0x00, // seq
+            0x03, // COM_QUERY
+        ];
+        data.extend_from_slice(sql);
+        assert_eq!(parse_mysql_query(&data), "SELECT 1");
+    }
+
+    #[test]
+    fn mysql_query_com_stmt_prepare() {
+        let sql = b"SELECT ?";
+        let pkt_len = (1 + sql.len()) as u32;
+        let mut data = vec![
+            (pkt_len & 0xff) as u8,
+            ((pkt_len >> 8) & 0xff) as u8,
+            ((pkt_len >> 16) & 0xff) as u8,
+            0x00,
+            0x16, // COM_STMT_PREPARE
+        ];
+        data.extend_from_slice(sql);
+        assert_eq!(parse_mysql_query(&data), "SELECT ?");
+    }
+
+    #[test]
+    fn mysql_query_other_command() {
+        let data = vec![0x01, 0x00, 0x00, 0x00, 0x01]; // COM_QUIT
+        assert!(parse_mysql_query(&data).contains("cmd=0x01"));
+    }
+
+    // ── parse_mysql_response ──────────────────────────────────────────────────
+
+    #[test]
+    fn mysql_response_ok() {
+        let data = vec![0x07, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00];
+        assert_eq!(parse_mysql_response(&data), "OK");
+    }
+
+    #[test]
+    fn mysql_response_eof() {
+        let data = vec![0x05, 0x00, 0x00, 0x05, 0xfe, 0x00, 0x00, 0x02, 0x00];
+        assert_eq!(parse_mysql_response(&data), "EOF");
+    }
+
+    #[test]
+    fn mysql_response_err() {
+        // header(4) + 0xFF + code(2) + '#' + sqlstate(5) + message
+        let mut data = vec![0x00, 0x00, 0x00, 0x01, 0xff];
+        data.extend_from_slice(&[0x48, 0x04]); // error code 1096 LE
+        data.push(b'#');
+        data.extend_from_slice(b"42000"); // sqlstate
+        data.extend_from_slice(b"Table not found");
+        assert!(parse_mysql_response(&data).starts_with("ERR"));
+        assert!(parse_mysql_response(&data).contains("Table not found"));
+    }
+
+    // ── parse_mongodb_query ───────────────────────────────────────────────────
+
+    fn make_mongodb_op_msg(cmd_key: &str, coll: &str) -> Vec<u8> {
+        // Build a minimal OP_MSG frame
+        // Wire: header(16) + flags(4) + section_kind(1) + bson_len(4) + bson_body
+        // BSON body: doc_len(4) + elem_type(1) + key_cstr + str_len(4) + value + \0 + term(1)
+        let value_bytes = coll.as_bytes();
+        let str_len = (value_bytes.len() + 1) as u32; // +1 for null terminator
+        let bson_body_len = (4 + 1 + cmd_key.len() + 1 + 4 + str_len as usize + 1) as u32;
+        let bson_doc_len = bson_body_len + 4; // includes itself
+
+        let msg_len = (16 + 4 + 1 + bson_doc_len as usize) as u32;
+
+        let mut data = Vec::new();
+        // Header: msg_len(4) + req_id(4) + resp_to(4) + opcode(4=2013 LE)
+        data.extend_from_slice(&msg_len.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes()); // req_id
+        data.extend_from_slice(&0u32.to_le_bytes()); // resp_to
+        data.extend_from_slice(&2013u32.to_le_bytes()); // opcode
+        // flags(4)
+        data.extend_from_slice(&0u32.to_le_bytes());
+        // section_kind(1)
+        data.push(0x00);
+        // BSON doc: doc_len(4) (includes itself)
+        data.extend_from_slice(&bson_doc_len.to_le_bytes());
+        // BSON element: type=0x02 (string)
+        data.push(0x02);
+        // key cstring
+        data.extend_from_slice(cmd_key.as_bytes());
+        data.push(0);
+        // string value: len(4) + bytes + \0
+        data.extend_from_slice(&str_len.to_le_bytes());
+        data.extend_from_slice(value_bytes);
+        data.push(0);
+        // BSON terminator
+        data.push(0);
+        data
+    }
+
+    #[test]
+    fn mongodb_query_op_msg() {
+        let data = make_mongodb_op_msg("find", "users");
+        assert_eq!(parse_mongodb_query(&data), "find users");
+    }
+
+    #[test]
+    fn mongodb_query_too_short() {
+        assert!(parse_mongodb_query(&[0u8; 10]).contains("raw"));
+    }
+
+    #[test]
+    fn mongodb_query_unknown_opcode() {
+        let mut data = vec![0u8; 20];
+        // opcode at bytes 12-15 = 9999
+        data[12..16].copy_from_slice(&9999u32.to_le_bytes());
+        assert!(parse_mongodb_query(&data).contains("opcode=9999"));
+    }
+
+    // ── parse_mongodb_response ────────────────────────────────────────────────
+
+    #[test]
+    fn mongodb_response_op_reply() {
+        let mut data = vec![0u8; 36];
+        // opcode at 12-15 = 1 (OP_REPLY)
+        data[12..16].copy_from_slice(&1u32.to_le_bytes());
+        // numberReturned at 32-35 = 3
+        data[32..36].copy_from_slice(&3u32.to_le_bytes());
+        assert_eq!(parse_mongodb_response(&data), "OP_REPLY docs=3");
+    }
+
+    // ── parse_postgres_response ───────────────────────────────────────────────
+
+    fn pg_msg(type_byte: u8, body: &[u8]) -> Vec<u8> {
+        let msg_len = (4 + body.len()) as u32;
+        let mut v = vec![type_byte];
+        v.extend_from_slice(&msg_len.to_be_bytes());
+        v.extend_from_slice(body);
+        v
+    }
+
+    #[test]
+    fn postgres_response_row_description_data_row_command_complete() {
+        // T: 1 field "id", D: value "42", C: "SELECT 1"
+        let mut t_body = vec![0u8, 1u8]; // field_count=1
+        t_body.extend_from_slice(b"id\0"); // name + null
+        t_body.extend_from_slice(&[0u8; 18]); // fixed fields
+
+        let mut d_body = vec![0u8, 1u8]; // field_count=1
+        d_body.extend_from_slice(&2i32.to_be_bytes()); // field_len=2
+        d_body.extend_from_slice(b"42");
+
+        let c_body = b"SELECT 1\0";
+
+        let mut data = pg_msg(b'T', &t_body);
+        data.extend(pg_msg(b'D', &d_body));
+        data.extend(pg_msg(b'C', c_body));
+
+        assert_eq!(parse_postgres_response(&data), "(id): 42 [SELECT 1]");
+    }
+
+    #[test]
+    fn postgres_response_command_complete_only() {
+        let data = pg_msg(b'C', b"INSERT 0 1\0");
+        assert_eq!(parse_postgres_response(&data), "INSERT 0 1");
+    }
+
+    #[test]
+    fn postgres_response_error_message() {
+        // E body: 'S'(1) + cstring + 'M'(1) + message cstring + '\0' terminator
+        let mut body = vec![b'S'];
+        body.extend_from_slice(b"ERROR\0");
+        body.push(b'M');
+        body.extend_from_slice(b"relation does not exist\0");
+        body.push(0);
+        let data = pg_msg(b'E', &body);
+        assert_eq!(parse_postgres_response(&data), "ERR: relation does not exist");
+    }
+
+    #[test]
+    fn postgres_response_empty() {
+        assert_eq!(parse_postgres_response(b""), "");
+    }
+
+    #[test]
+    fn postgres_response_null_field() {
+        let mut t_body = vec![0u8, 1u8];
+        t_body.extend_from_slice(b"val\0");
+        t_body.extend_from_slice(&[0u8; 18]);
+
+        let mut d_body = vec![0u8, 1u8]; // 1 field
+        d_body.extend_from_slice(&(-1i32).to_be_bytes()); // NULL
+
+        let mut data = pg_msg(b'T', &t_body);
+        data.extend(pg_msg(b'D', &d_body));
+        data.extend(pg_msg(b'C', b"SELECT 1\0"));
+
+        assert_eq!(parse_postgres_response(&data), "(val): NULL [SELECT 1]");
     }
 }

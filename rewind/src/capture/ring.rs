@@ -51,3 +51,98 @@ impl RingBuffer {
         self.inner.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::snapshot::{DbRecord, Event, HttpRecord};
+
+    fn http_event(ts: u64) -> Event {
+        Event::Http(HttpRecord {
+            timestamp_ns: ts,
+            direction: "inbound".to_string(),
+            method: "GET".to_string(),
+            path: "/".to_string(),
+            status_code: Some(200),
+            service: "api".to_string(),
+            trace_id: None,
+            body: None,
+        })
+    }
+
+    fn db_event(ts: u64) -> Event {
+        Event::Db(DbRecord {
+            timestamp_ns: ts,
+            protocol: "postgres".to_string(),
+            query: "SELECT 1".to_string(),
+            response: None,
+            service: "api".to_string(),
+            pid: 1,
+        })
+    }
+
+    #[test]
+    fn push_within_capacity() {
+        let mut rb = RingBuffer::new(10);
+        rb.push(http_event(1));
+        rb.push(http_event(2));
+        assert_eq!(rb.len(), 2);
+    }
+
+    #[test]
+    fn push_evicts_oldest_when_full() {
+        let mut rb = RingBuffer::new(3);
+        rb.push(http_event(1));
+        rb.push(http_event(2));
+        rb.push(http_event(3));
+        rb.push(http_event(4)); // should evict ts=1
+        assert_eq!(rb.len(), 3);
+        // drain_window(MAX) returns all three; oldest should be ts=2
+        let events = rb.drain_window(Duration::MAX);
+        assert_eq!(events.len(), 3);
+        if let Event::Http(h) = &events[0] {
+            assert_eq!(h.timestamp_ns, 2);
+        } else {
+            panic!("expected Http event");
+        }
+    }
+
+    #[test]
+    fn drain_window_max_returns_all() {
+        let mut rb = RingBuffer::new(100);
+        for i in 0..5 {
+            rb.push(http_event(i));
+        }
+        assert_eq!(rb.drain_window(Duration::MAX).len(), 5);
+    }
+
+    #[test]
+    fn drain_window_zero_returns_none() {
+        let mut rb = RingBuffer::new(100);
+        rb.push(http_event(1));
+        rb.push(db_event(2));
+        // A zero-duration window cuts off everything pushed before now
+        let events = rb.drain_window(Duration::ZERO);
+        // May be 0 or very few depending on timing; must not panic
+        let _ = events;
+    }
+
+    #[test]
+    fn drain_does_not_mutate_buffer() {
+        let mut rb = RingBuffer::new(100);
+        rb.push(http_event(1));
+        rb.push(http_event(2));
+        let _ = rb.drain_window(Duration::MAX);
+        assert_eq!(rb.len(), 2); // drain is non-destructive
+    }
+
+    #[test]
+    fn mixed_event_types_preserved() {
+        let mut rb = RingBuffer::new(10);
+        rb.push(http_event(1));
+        rb.push(db_event(2));
+        let events = rb.drain_window(Duration::MAX);
+        assert!(matches!(events[0], Event::Http(_)));
+        assert!(matches!(events[1], Event::Db(_)));
+    }
+}

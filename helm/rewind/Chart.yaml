@@ -1,0 +1,16 @@
+apiVersion: v2
+name: rewind
+description: Deterministic replay of distributed system incidents using eBPF
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - ebpf
+  - debugging
+  - observability
+  - incident-replay
+sources:
+  - https://github.com/anduaura/rewind
+maintainers:
+  - name: rewind authors
+    url: https://github.com/anduaura/rewind

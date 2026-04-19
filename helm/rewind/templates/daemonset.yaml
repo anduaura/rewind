@@ -1,0 +1,111 @@
+{{- $tag := .Values.image.tag | default .Chart.AppVersion }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ .Chart.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/version: {{ $tag | quote }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    {{- with .Values.extraLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/version: {{ $tag | quote }}
+        {{- with .Values.extraLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ .Chart.Name }}
+      hostPID: true
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+
+      tolerations:
+        {{- toYaml .Values.tolerations | nindent 8 }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      initContainers:
+        - name: mkdir-output
+          image: busybox:1.36
+          command: ["mkdir", "-p", {{ .Values.outputDir | quote }}]
+          volumeMounts:
+            - name: host-output
+              mountPath: /host-output
+
+      containers:
+        - name: rewind
+          image: "{{ .Values.image.repository }}:{{ $tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - record
+            - --services
+            - {{ .Values.services | quote }}
+            - --output
+            - {{ .Values.outputDir }}/node-$(NODE_NAME).rwd
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: REWIND_RING_CAPACITY
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Chart.Name }}-config
+                  key: ring_buffer_capacity
+            - name: REWIND_SOCKET_PATH
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Chart.Name }}-config
+                  key: socket_path
+          securityContext:
+            privileged: true
+            capabilities:
+              add:
+                - BPF
+                - PERFMON
+                - SYS_PTRACE
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: host-output
+              mountPath: {{ .Values.outputDir }}
+            - name: host-proc
+              mountPath: /proc
+              readOnly: true
+            - name: host-sys
+              mountPath: /sys
+              readOnly: true
+            - name: host-debugfs
+              mountPath: /sys/kernel/debug
+
+      volumes:
+        - name: host-output
+          hostPath:
+            path: /var/lib/rewind
+            type: DirectoryOrCreate
+        - name: host-proc
+          hostPath:
+            path: /proc
+        - name: host-sys
+          hostPath:
+            path: /sys
+        - name: host-debugfs
+          hostPath:
+            path: /sys/kernel/debug
