@@ -96,8 +96,8 @@ Three crates in the repo:
 | 22 | eBPF overhead measurement + security/threat model documentation | Done |
 | 23 | Cut `v0.1.0` tag — trigger release binary + Docker image publish | Pending |
 | 24 | Health probe + Prometheus metrics endpoint (`/healthz`, `/metrics` on :9090) | Done |
-| 25 | PII scrubbing config (`--redact-headers`, path allow-list) | Pending |
-| 26 | Multi-arch Docker image (amd64 + arm64) | Pending |
+| 25 | PII scrubbing config (`--redact-headers`, path allow-list) | Done |
+| 26 | Multi-arch Docker image (amd64 + arm64) | Done |
 
 
 
