@@ -265,6 +265,7 @@ fn init_watched_ports(bpf: &mut Ebpf) -> Result<()> {
     map.insert(6379u32, 1u8, 0)?; // Redis
     map.insert(3306u32, 2u8, 0)?; // MySQL
     map.insert(27017u32, 3u8, 0)?; // MongoDB
+    map.insert(9092u32, 4u8, 0)?; // Kafka
     Ok(())
 }
 
@@ -591,6 +592,7 @@ fn correlate_db_buf(
         DbProtocol::Redis => "redis",
         DbProtocol::MySQL => "mysql",
         DbProtocol::MongoDB => "mongodb",
+        DbProtocol::Kafka => "kafka",
     };
 
     if raw.is_response == 0 {
@@ -599,6 +601,7 @@ fn correlate_db_buf(
             DbProtocol::Redis => parse_redis_query(payload),
             DbProtocol::MySQL => parse_mysql_query(payload),
             DbProtocol::MongoDB => parse_mongodb_query(payload),
+            DbProtocol::Kafka => parse_kafka_request(payload),
         };
         let record = DbRecord {
             timestamp_ns: raw.timestamp_ns,
@@ -621,6 +624,7 @@ fn correlate_db_buf(
             DbProtocol::Redis => parse_redis_response(payload),
             DbProtocol::MySQL => parse_mysql_response(payload),
             DbProtocol::MongoDB => parse_mongodb_response(payload),
+            DbProtocol::Kafka => parse_kafka_response(payload),
         };
         let completed = pending
             .lock()
@@ -836,6 +840,132 @@ fn parse_mongodb_response(data: &[u8]) -> String {
 ///
 /// This is best-effort: small result sets (≤256 bytes total) are fully decoded;
 /// larger ones surface only what fits in the capture window.
+/// Kafka request wire format (KIP-4 / Kafka protocol v0+):
+///   i32be total_length
+///   i16be api_key       (0=Produce, 1=Fetch, 3=Metadata, 8=OffsetCommit …)
+///   i16be api_version
+///   i32be correlation_id
+///   i16be client_id_len  (-1 = null)
+///   [client_id bytes]
+///   … request-specific body …
+///
+/// We decode the api_key and, for Produce (0) and Fetch (1), surface the
+/// first topic name from the body.
+fn parse_kafka_request(data: &[u8]) -> String {
+    if data.len() < 10 {
+        return format!("(kafka {} bytes)", data.len());
+    }
+    let api_key = i16::from_be_bytes([data[4], data[5]]);
+    let api_name = kafka_api_name(api_key);
+
+    // Skip past the fixed header to find the client_id string, then the body.
+    // Header layout: length(4) + api_key(2) + api_version(2) + correlation_id(4) = 12 bytes
+    // Then client_id: i16be length + bytes
+    let mut pos = 12usize;
+    if pos + 2 <= data.len() {
+        let cid_len = i16::from_be_bytes([data[pos], data[pos + 1]]) as i32;
+        pos += 2;
+        if cid_len > 0 {
+            pos += cid_len as usize;
+        }
+    }
+
+    // For Produce/Fetch: skip the api-specific preamble then read the first
+    // topic name from the topic array.
+    // Produce v0: acks(i16) + timeout_ms(i32)       = 6 bytes preamble
+    // Fetch   v0: replica_id(i32) + max_wait(i32) + min_bytes(i32) = 12 bytes
+    let preamble = match api_key {
+        0 => 6usize,
+        1 => 12usize,
+        _ => 0,
+    };
+    if (api_key == 0 || api_key == 1) && pos + preamble + 6 <= data.len() {
+        let arr = pos + preamble;
+        // topic_count: i32be at arr
+        let count = i32::from_be_bytes([data[arr], data[arr + 1], data[arr + 2], data[arr + 3]]);
+        if count > 0 && arr + 6 <= data.len() {
+            // first topic name_len: i16be at arr+4
+            let name_len = i16::from_be_bytes([data[arr + 4], data[arr + 5]]) as usize;
+            if name_len > 0 && name_len <= 249 && arr + 6 + name_len <= data.len() {
+                let name = &data[arr + 6..arr + 6 + name_len];
+                if name
+                    .iter()
+                    .all(|&b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+                {
+                    return format!("{api_name} topic={}", String::from_utf8_lossy(name));
+                }
+            }
+        }
+    }
+
+    api_name.to_string()
+}
+
+/// Kafka response wire format:
+///   i32be total_length
+///   i32be correlation_id
+///   … response body …
+///
+/// We surface the correlation_id so callers can match request/response pairs,
+/// and for Fetch responses we look for the first topic name in the payload.
+fn parse_kafka_response(data: &[u8]) -> String {
+    if data.len() < 8 {
+        return String::new();
+    }
+    let correlation_id = i32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+    // Try to pull a topic name out of the response body (best-effort).
+    if let Some(topic) = scan_kafka_topic(data, 8) {
+        return format!("response corr={correlation_id} topic={topic}");
+    }
+    format!("response corr={correlation_id}")
+}
+
+/// Scan `data[start..]` for the first i16be-prefixed string that looks like a
+/// Kafka topic name (printable ASCII, 1–249 chars, no control bytes).
+fn scan_kafka_topic(data: &[u8], start: usize) -> Option<String> {
+    let mut i = start;
+    while i + 2 < data.len() {
+        let len = i16::from_be_bytes([data[i], data[i + 1]]) as usize;
+        i += 2;
+        if len == 0 || len > 249 || i + len > data.len() {
+            i += 1;
+            continue;
+        }
+        let candidate = &data[i..i + len];
+        if candidate
+            .iter()
+            .all(|&b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+        {
+            return Some(String::from_utf8_lossy(candidate).to_string());
+        }
+        i += len;
+    }
+    None
+}
+
+fn kafka_api_name(api_key: i16) -> &'static str {
+    match api_key {
+        0 => "Produce",
+        1 => "Fetch",
+        2 => "ListOffsets",
+        3 => "Metadata",
+        8 => "OffsetCommit",
+        9 => "OffsetFetch",
+        10 => "FindCoordinator",
+        11 => "JoinGroup",
+        12 => "Heartbeat",
+        13 => "LeaveGroup",
+        14 => "SyncGroup",
+        15 => "DescribeGroups",
+        16 => "ListGroups",
+        17 => "SaslHandshake",
+        18 => "ApiVersions",
+        19 => "CreateTopics",
+        20 => "DeleteTopics",
+        _ => "KafkaRequest",
+    }
+}
+
 fn parse_postgres_response(data: &[u8]) -> String {
     if data.is_empty() {
         return String::new();
@@ -1472,5 +1602,66 @@ mod tests {
         data.extend(pg_msg(b'C', b"SELECT 1\0"));
 
         assert_eq!(parse_postgres_response(&data), "(val): NULL [SELECT 1]");
+    }
+
+    // ── Kafka parsers ─────────────────────────────────────────────────────────
+
+    fn kafka_request(api_key: i16, client_id: &[u8], body: &[u8]) -> Vec<u8> {
+        // length(4) + api_key(2) + api_version(2) + correlation_id(4)
+        // + client_id_len(2) + client_id + body
+        let header_inner_len = 2 + 2 + 4 + 2 + client_id.len();
+        let total = header_inner_len + body.len();
+        let mut out = Vec::new();
+        out.extend_from_slice(&(total as i32).to_be_bytes());
+        out.extend_from_slice(&api_key.to_be_bytes());
+        out.extend_from_slice(&0i16.to_be_bytes()); // api_version
+        out.extend_from_slice(&1i32.to_be_bytes()); // correlation_id
+        out.extend_from_slice(&(client_id.len() as i16).to_be_bytes());
+        out.extend_from_slice(client_id);
+        out.extend_from_slice(body);
+        out
+    }
+
+    #[test]
+    fn kafka_fetch_api_name() {
+        let data = kafka_request(1, b"test-client", &[]);
+        assert!(parse_kafka_request(&data).starts_with("Fetch"));
+    }
+
+    #[test]
+    fn kafka_metadata_api_name() {
+        let data = kafka_request(3, b"test-client", &[]);
+        assert!(parse_kafka_request(&data).starts_with("Metadata"));
+    }
+
+    #[test]
+    fn kafka_produce_with_topic() {
+        let topic = b"orders";
+        let mut body = Vec::new();
+        // Produce v0 preamble: acks(i16) + timeout_ms(i32) = 6 bytes
+        body.extend_from_slice(&(-1i16).to_be_bytes()); // acks = all replicas
+        body.extend_from_slice(&5000i32.to_be_bytes()); // timeout_ms
+                                                        // Topic array: count(i32) + name_len(i16) + name
+        body.extend_from_slice(&1i32.to_be_bytes());
+        body.extend_from_slice(&(topic.len() as i16).to_be_bytes());
+        body.extend_from_slice(topic);
+        let data = kafka_request(0, b"producer-1", &body);
+        let result = parse_kafka_request(&data);
+        assert!(
+            result.contains("orders"),
+            "expected topic name in: {result}"
+        );
+    }
+
+    #[test]
+    fn kafka_too_short_falls_back() {
+        assert!(parse_kafka_request(&[0u8; 4]).contains("kafka"));
+    }
+
+    #[test]
+    fn kafka_response_has_correlation_id() {
+        let mut data = vec![0u8; 4]; // length placeholder
+        data.extend_from_slice(&42i32.to_be_bytes()); // correlation_id
+        assert!(parse_kafka_response(&data).contains("42"));
     }
 }
