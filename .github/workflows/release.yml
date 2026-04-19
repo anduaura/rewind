@@ -10,7 +10,7 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.artifact }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -19,6 +19,15 @@ jobs:
             target: x86_64-unknown-linux-musl
             binary: rewind
             artifact: rewind-linux-x86_64
+            deb_arch: amd64
+            rpm_arch: x86_64
+
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            binary: rewind
+            artifact: rewind-linux-arm64
+            deb_arch: arm64
+            rpm_arch: aarch64
 
     steps:
       - uses: actions/checkout@v4
@@ -29,8 +38,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install musl tools
-        if: contains(matrix.target, 'musl')
-        run: sudo apt-get install -y musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -48,18 +56,54 @@ jobs:
             --release \
             --target ${{ matrix.target }}
 
-      - name: Package binary
+      - name: Stage binary
         run: |
           cp target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.artifact }}
           sha256sum ${{ matrix.artifact }} > ${{ matrix.artifact }}.sha256
 
-      - name: Upload artifact
+      # ── .deb package ──────────────────────────────────────────────────────────
+      - name: Build .deb
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          PKG=rewind_${VERSION}_${{ matrix.deb_arch }}
+          mkdir -p ${PKG}/usr/bin ${PKG}/DEBIAN
+          cp ${{ matrix.artifact }} ${PKG}/usr/bin/rewind
+          sed \
+            -e "s/VERSION_PLACEHOLDER/${VERSION}/" \
+            -e "s/ARCH_PLACEHOLDER/${{ matrix.deb_arch }}/" \
+            packaging/deb/DEBIAN/control > ${PKG}/DEBIAN/control
+          dpkg-deb --build ${PKG}
+          sha256sum ${PKG}.deb > ${PKG}.deb.sha256
+
+      # ── .rpm package ──────────────────────────────────────────────────────────
+      - name: Build .rpm
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          sudo apt-get install -y rpm
+          mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          cp ${{ matrix.artifact }} ~/rpmbuild/SOURCES/rewind-${VERSION}-linux-${{ matrix.rpm_arch }}
+          sed "s/%{version}/${VERSION}/g; s/%{arch}/${{ matrix.rpm_arch }}/g" \
+            packaging/rpm/rewind.spec > ~/rpmbuild/SPECS/rewind.spec
+          rpmbuild -bb \
+            --define "version ${VERSION}" \
+            --define "arch ${{ matrix.rpm_arch }}" \
+            ~/rpmbuild/SPECS/rewind.spec
+          cp ~/rpmbuild/RPMS/${{ matrix.rpm_arch }}/rewind-${VERSION}-1.*.rpm \
+             rewind-${VERSION}-1.${{ matrix.rpm_arch }}.rpm
+          sha256sum rewind-${VERSION}-1.${{ matrix.rpm_arch }}.rpm \
+            > rewind-${VERSION}-1.${{ matrix.rpm_arch }}.rpm.sha256
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
+          name: ${{ matrix.artifact }}-packages
           path: |
             ${{ matrix.artifact }}
             ${{ matrix.artifact }}.sha256
+            rewind_*_${{ matrix.deb_arch }}.deb
+            rewind_*_${{ matrix.deb_arch }}.deb.sha256
+            rewind-*.${{ matrix.rpm_arch }}.rpm
+            rewind-*.${{ matrix.rpm_arch }}.rpm.sha256
 
   release:
     name: Create GitHub Release

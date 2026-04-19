@@ -1,0 +1,17 @@
+Package: rewind
+Version: VERSION_PLACEHOLDER
+Architecture: ARCH_PLACEHOLDER
+Maintainer: andu <andu.ucsd@gmail.com>
+Depends: libc6
+Section: utils
+Priority: optional
+Homepage: https://github.com/anduaura/rewind
+Description: Deterministic replay of distributed system incidents
+ rewind attaches an eBPF agent to running containers and captures all
+ inter-service HTTP/gRPC traffic, outbound DB calls, and non-deterministic
+ syscalls. A triggered flush produces a .rwd snapshot that can be replayed
+ locally to reproduce any production incident exactly.
+ .
+ Record: rewind record --services api,worker --output incident.rwd
+ Flush:  rewind flush --window 5m --output incident.rwd
+ Replay: rewind replay incident.rwd --compose docker-compose.yml

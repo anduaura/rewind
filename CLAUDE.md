@@ -116,7 +116,7 @@ Three crates in the repo:
 | 37 | Cloud storage sink — `rewind push s3://\|gs://\|az://` for snapshot archival to object storage | Done |
 | 38 | Grafana dashboard bundle — pre-built dashboards for the `/metrics` Prometheus endpoint | Done |
 | 39 | Kafka capture — eBPF producer/consumer wire protocol (port 9092) capture | Done |
-| 40 | Package distribution — Homebrew tap + apt/deb + rpm packages for frictionless installation | Pending |
+| 40 | Package distribution — Homebrew tap + apt/deb + rpm packages for frictionless installation | Done |
 
 ## Enterprise readiness goal
 
