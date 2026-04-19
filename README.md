@@ -13,8 +13,10 @@ rewind captures the full causal chain of an incident and lets you replay it dete
 ## How it works
 
 **Record** — an eBPF agent attaches to running containers and captures:
-- All inter-service HTTP/gRPC traffic (requests + responses + timestamps)
-- Outbound DB calls (Postgres wire protocol, Redis RESP)
+- All inter-service HTTP traffic (method, path, status, headers, timestamps)
+- W3C `traceparent` headers for cross-service correlation
+- Outbound DB calls: Postgres wire protocol, Redis RESP, MySQL wire protocol
+- DB responses correlated with their queries
 - Non-deterministic syscalls: `clock_gettime`, `getrandom`
 
 **Replay** — given the snapshot, the replay engine:
@@ -34,21 +36,20 @@ The output is a `.rwd` file (JSON) containing the full causal chain.
 make build-ebpf       # compile the eBPF probe (nightly + bpfel target)
 make build-userspace  # compile the CLI (embeds the eBPF binary)
 
-# 2. Start the demo services
-docker compose -f examples/docker-compose-demo/docker-compose.yml up -d
+# 2. Attach to any Docker Compose stack — services auto-detected
+sudo rewind attach
 
-# 3. Record an incident
-sudo ./target/release/rewind record --services api,worker --output incident.rwd
-# ... trigger a request, then Ctrl+C to flush
+# 3. Trigger a request in another terminal, then flush to disk
+rewind flush --window 5m --output incident.rwd
 
 # 4. Inspect the snapshot
-./target/release/rewind inspect incident.rwd
+rewind inspect incident.rwd
 
 # 5. Replay it
-./target/release/rewind replay incident.rwd --compose examples/docker-compose-demo/docker-compose.yml
+rewind replay incident.rwd --compose docker-compose.yml
 ```
 
-Or run everything with:
+Or run the bundled two-service demo end-to-end:
 
 ```bash
 make demo
@@ -57,13 +58,48 @@ make demo
 ## CLI
 
 ```
-rewind record  --services api,worker --output incident.rwd
-rewind flush   --window 5m --output incident.rwd
-rewind replay  incident.rwd --compose docker-compose.yml
+rewind attach  [-f docker-compose.yml] [-o incident.rwd]
+rewind record  --services api,worker  [-o incident.rwd]
+rewind flush   --window 5m            [-o incident.rwd]
+rewind replay  incident.rwd [--compose docker-compose.yml]
 rewind inspect incident.rwd
+rewind export  incident.rwd [-o spans.json]
 ```
 
-`record` runs always-on with a bounded in-memory ring buffer. `flush` dumps the last N minutes to disk — so you capture retrospectively after an alert fires, not prospectively.
+### attach
+
+The fastest way to start capturing. Reads `docker-compose.yml` in the current directory, extracts all service names, and starts recording — no `--services` flag required.
+
+```bash
+sudo rewind attach                    # reads ./docker-compose.yml
+sudo rewind attach -f staging.yml     # explicit compose file
+```
+
+### record / flush
+
+`record` runs always-on with a bounded in-memory ring buffer (200 k events, ~5 minutes of typical traffic). `flush` dumps the last N minutes to disk without stopping the agent — so you capture retrospectively after an alert fires, not prospectively.
+
+```bash
+# Terminal 1 — start the agent
+sudo rewind record --services api,worker
+
+# Terminal 2 — after an incident is observed, snapshot the last 2 minutes
+rewind flush --window 2m --output incident.rwd
+```
+
+### export
+
+Converts a `.rwd` snapshot to [OTLP JSON](https://opentelemetry.io/docs/specs/otlp/) trace spans. Each HTTP, DB, and syscall event becomes a span. Pipe directly to any OpenTelemetry collector.
+
+```bash
+rewind export incident.rwd | curl -sX POST http://localhost:4318/v1/traces \
+    -H 'Content-Type: application/json' -d @-
+
+# or write to file
+rewind export incident.rwd --output spans.json
+```
+
+If the captured HTTP requests carried a W3C `traceparent` header, the trace-id is preserved in the exported spans — so rewind incidents appear in the same trace view as your existing distributed traces.
 
 ## Why eBPF
 
@@ -78,15 +114,35 @@ Zero instrumentation. The agent attaches to running containers without restarts,
 | What's captured | Incident coverage |
 |---|---|
 | HTTP traffic only | ~40–50% |
-| + DB wire protocol (Postgres, Redis) | ~75% |
+| + DB wire protocol (Postgres, Redis, MySQL) | ~75% |
 | + Minimum row snapshot (touched rows only) | ~90% |
 | + Full DB snapshot (opt-in) | ~95% |
 
 Thread scheduling non-determinism (Heisenbugs) is not addressable with this approach.
 
-## Project status
+## Benchmarks
 
-Early — the capture pipeline is implemented, replay is stubbed. See [CLAUDE.md](CLAUDE.md) for the detailed implementation status and next milestones.
+```bash
+make bench
+```
+
+Criterion benchmarks cover ring buffer throughput (push + drain) and snapshot I/O (read + write) at 100 / 1k / 10k events. Results are written to `rewind/target/criterion/`.
+
+## Project layout
+
+```
+rewind-common/   shared no_std types (HttpEvent, DbEvent, SyscallEvent)
+rewind-ebpf/     kernel-space eBPF probes (kprobes + tracepoint)
+rewind/
+  src/
+    capture/     eBPF loader, ring buffer, Unix socket IPC
+    replay/      replay engine + mock HTTP server
+    store/       .rwd snapshot read/write
+    export.rs    OTLP JSON export
+  benches/       criterion benchmarks
+examples/
+  docker-compose-demo/   two-service Flask demo (api + worker + Postgres + Redis)
+```
 
 ## Comparable tools
 
