@@ -44,10 +44,13 @@ fn inspect_shows_event_counts() {
         .expect("failed to run rewind inspect");
 
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("http=1"),    "missing http count:\n{stdout}");
-    assert!(stdout.contains("db=2"),      "missing db count:\n{stdout}");
-    assert!(stdout.contains("syscall=1"), "missing syscall count:\n{stdout}");
-    assert!(stdout.contains("grpc=1"),    "missing grpc count:\n{stdout}");
+    assert!(stdout.contains("http=1"), "missing http count:\n{stdout}");
+    assert!(stdout.contains("db=2"), "missing db count:\n{stdout}");
+    assert!(
+        stdout.contains("syscall=1"),
+        "missing syscall count:\n{stdout}"
+    );
+    assert!(stdout.contains("grpc=1"), "missing grpc count:\n{stdout}");
 }
 
 #[test]
@@ -58,8 +61,11 @@ fn inspect_shows_services() {
         .expect("failed to run rewind inspect");
 
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("api"),    "missing service 'api':\n{stdout}");
-    assert!(stdout.contains("worker"), "missing service 'worker':\n{stdout}");
+    assert!(stdout.contains("api"), "missing service 'api':\n{stdout}");
+    assert!(
+        stdout.contains("worker"),
+        "missing service 'worker':\n{stdout}"
+    );
 }
 
 #[test]
@@ -80,7 +86,10 @@ fn inspect_nonexistent_file_fails() {
         .output()
         .expect("failed to run rewind inspect");
 
-    assert!(!out.status.success(), "expected non-zero exit for missing file");
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit for missing file"
+    );
 }
 
 // ── export ────────────────────────────────────────────────────────────────────
@@ -92,8 +101,12 @@ fn export_otlp_exits_zero() {
         .output()
         .expect("failed to run rewind export");
 
-    assert!(out.status.success(), "exit code: {}\nstderr: {}", out.status,
-        String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "exit code: {}\nstderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -117,27 +130,48 @@ fn export_otlp_has_resource_spans() {
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert!(v["resourceSpans"].is_array(), "missing resourceSpans:\n{stdout}");
+    assert!(
+        v["resourceSpans"].is_array(),
+        "missing resourceSpans:\n{stdout}"
+    );
     let spans = &v["resourceSpans"][0]["scopeSpans"][0]["spans"];
     assert!(spans.is_array(), "missing spans:\n{stdout}");
-    assert_eq!(spans.as_array().unwrap().len(), 5, "expected 5 spans for 5 events");
+    assert_eq!(
+        spans.as_array().unwrap().len(),
+        5,
+        "expected 5 spans for 5 events"
+    );
 }
 
 #[test]
 fn export_jaeger_exits_zero() {
     let out = Command::new(rewind_bin())
-        .args(["export", fixture("sample.rwd").to_str().unwrap(), "--format", "jaeger"])
+        .args([
+            "export",
+            fixture("sample.rwd").to_str().unwrap(),
+            "--format",
+            "jaeger",
+        ])
         .output()
         .expect("failed to run rewind export --format jaeger");
 
-    assert!(out.status.success(), "exit code: {}\nstderr: {}", out.status,
-        String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "exit code: {}\nstderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
 fn export_jaeger_produces_valid_json() {
     let out = Command::new(rewind_bin())
-        .args(["export", fixture("sample.rwd").to_str().unwrap(), "--format", "jaeger"])
+        .args([
+            "export",
+            fixture("sample.rwd").to_str().unwrap(),
+            "--format",
+            "jaeger",
+        ])
         .output()
         .expect("failed to run rewind export --format jaeger");
 
@@ -150,8 +184,12 @@ fn export_jaeger_produces_valid_json() {
 fn export_to_file() {
     let tmp = std::env::temp_dir().join("rewind_test_export.json");
     let out = Command::new(rewind_bin())
-        .args(["export", fixture("sample.rwd").to_str().unwrap(),
-               "--output", tmp.to_str().unwrap()])
+        .args([
+            "export",
+            fixture("sample.rwd").to_str().unwrap(),
+            "--output",
+            tmp.to_str().unwrap(),
+        ])
         .output()
         .expect("failed to run rewind export --output");
 

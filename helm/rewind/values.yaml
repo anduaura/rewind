@@ -16,6 +16,11 @@ ringBufferCapacity: "200000"
 # Unix socket path used by `rewind flush`.
 socketPath: /tmp/rewind.sock
 
+metrics:
+  port: 9090
+  # Set to true to create a Kubernetes Service for Prometheus scraping.
+  serviceEnabled: true
+
 resources:
   requests:
     cpu: 50m

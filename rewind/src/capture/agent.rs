@@ -33,10 +33,12 @@ use tokio::signal;
 
 use crate::capture::ring::RingBuffer;
 use crate::cli::{AttachArgs, FlushArgs, RecordArgs};
+use crate::metrics::Metrics;
 use crate::store::snapshot::{DbRecord, Event, GrpcRecord, HttpRecord, Snapshot, SyscallRecord};
 use rewind_common::{DbEvent, DbProtocol, Direction, GrpcEvent, HttpEvent, SyscallEvent};
 
 const SOCKET_PATH: &str = "/tmp/rewind.sock";
+const METRICS_ADDR: &str = "0.0.0.0:9090";
 const RING_MAX_EVENTS: usize = 200_000;
 
 // (pid, protocol) → FIFO queue of queries waiting for a matching response
@@ -62,6 +64,13 @@ pub async fn run(args: RecordArgs) -> Result<()> {
 
     let ring: Arc<Mutex<RingBuffer>> = Arc::new(Mutex::new(RingBuffer::new(RING_MAX_EVENTS)));
     let pending_db: Arc<Mutex<PendingDb>> = Arc::new(Mutex::new(StdHashMap::new()));
+    let metrics: Arc<Metrics> = Arc::new(Metrics::new(RING_MAX_EVENTS));
+
+    if let Err(e) = crate::metrics::serve(METRICS_ADDR, Arc::clone(&metrics)).await {
+        eprintln!("warn: metrics server failed to start on {METRICS_ADDR}: {e}");
+    } else {
+        println!("  metrics:  http://{METRICS_ADDR}/metrics");
+    }
 
     let mut bpf = EbpfLoader::new()
         .load(REWIND_EBPF)
@@ -74,17 +83,35 @@ pub async fn run(args: RecordArgs) -> Result<()> {
     attach_probes(&mut bpf)?;
     init_watched_ports(&mut bpf)?;
 
-    let http_task = spawn_http_drain(&mut bpf, Arc::clone(&ring))?;
-    let syscall_task = spawn_syscall_drain(&mut bpf, Arc::clone(&ring))?;
-    let db_task = spawn_db_drain(&mut bpf, Arc::clone(&ring), Arc::clone(&pending_db))?;
-    let grpc_task = spawn_grpc_drain(&mut bpf, Arc::clone(&ring))?;
+    let http_task = spawn_http_drain(&mut bpf, Arc::clone(&ring), Arc::clone(&metrics))?;
+    let syscall_task = spawn_syscall_drain(&mut bpf, Arc::clone(&ring), Arc::clone(&metrics))?;
+    let db_task = spawn_db_drain(
+        &mut bpf,
+        Arc::clone(&ring),
+        Arc::clone(&pending_db),
+        Arc::clone(&metrics),
+    )?;
+    let grpc_task = spawn_grpc_drain(&mut bpf, Arc::clone(&ring), Arc::clone(&metrics))?;
 
     let services = args.services.clone();
     let socket_task = tokio::spawn(run_socket_listener(
         Arc::clone(&ring),
         Arc::clone(&pending_db),
+        Arc::clone(&metrics),
         services.clone(),
     ));
+
+    // Periodically sync ring buffer size into metrics.
+    let ring_for_metrics = Arc::clone(&ring);
+    let metrics_for_gauge = Arc::clone(&metrics);
+    let gauge_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+            let size = ring_for_metrics.lock().unwrap().len();
+            metrics_for_gauge.set_ring_size(size);
+        }
+    });
 
     println!("Recording… press Ctrl+C to stop, or run `rewind flush` to snapshot");
     signal::ctrl_c().await?;
@@ -94,6 +121,7 @@ pub async fn run(args: RecordArgs) -> Result<()> {
     db_task.abort();
     grpc_task.abort();
     socket_task.abort();
+    gauge_task.abort();
 
     let snapshot = build_snapshot(&ring, &pending_db, Duration::MAX, &services);
     println!(
@@ -226,27 +254,36 @@ fn init_watched_ports(bpf: &mut Ebpf) -> Result<()> {
 fn spawn_http_drain(
     bpf: &mut Ebpf,
     ring: Arc<Mutex<RingBuffer>>,
+    metrics: Arc<Metrics>,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    drain_perf_array(bpf, "HTTP_EVENTS", 1024, ring, |buf| {
-        parse_http_event(buf).map(Event::Http)
+    drain_perf_array(bpf, "HTTP_EVENTS", 1024, ring, move |buf| {
+        let e = parse_http_event(buf).map(Event::Http)?;
+        metrics.inc_http();
+        Ok(e)
     })
 }
 
 fn spawn_syscall_drain(
     bpf: &mut Ebpf,
     ring: Arc<Mutex<RingBuffer>>,
+    metrics: Arc<Metrics>,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    drain_perf_array(bpf, "SYSCALL_EVENTS", 256, ring, |buf| {
-        parse_syscall_event(buf).map(Event::Syscall)
+    drain_perf_array(bpf, "SYSCALL_EVENTS", 256, ring, move |buf| {
+        let e = parse_syscall_event(buf).map(Event::Syscall)?;
+        metrics.inc_syscall();
+        Ok(e)
     })
 }
 
 fn spawn_grpc_drain(
     bpf: &mut Ebpf,
     ring: Arc<Mutex<RingBuffer>>,
+    metrics: Arc<Metrics>,
 ) -> Result<tokio::task::JoinHandle<()>> {
-    drain_perf_array(bpf, "GRPC_EVENTS", 512, ring, |buf| {
-        parse_grpc_event(buf).map(Event::Grpc)
+    drain_perf_array(bpf, "GRPC_EVENTS", 512, ring, move |buf| {
+        let e = parse_grpc_event(buf).map(Event::Grpc)?;
+        metrics.inc_grpc();
+        Ok(e)
     })
 }
 
@@ -254,6 +291,7 @@ fn spawn_db_drain(
     bpf: &mut Ebpf,
     ring: Arc<Mutex<RingBuffer>>,
     pending_db: Arc<Mutex<PendingDb>>,
+    metrics: Arc<Metrics>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let mut perf_array = AsyncPerfEventArray::try_from(
         bpf.take_map("DB_EVENTS")
@@ -270,6 +308,7 @@ fn spawn_db_drain(
             };
             let ring = Arc::clone(&ring);
             let pending_db = Arc::clone(&pending_db);
+            let metrics = Arc::clone(&metrics);
 
             tasks.push(tokio::spawn(async move {
                 let mut buffers = (0..10)
@@ -280,7 +319,9 @@ fn spawn_db_drain(
                         break;
                     };
                     for b in buffers.iter().take(info.read) {
-                        correlate_db_buf(b, &ring, &pending_db);
+                        if correlate_db_buf(b, &ring, &pending_db) {
+                            metrics.inc_db();
+                        }
                     }
                 }
             }));
@@ -482,13 +523,14 @@ fn extract_grpc_path(frame: &[u8; 128]) -> String {
 // response arrives the pair is completed and pushed to the ring buffer.
 // Any queries still pending at flush time are included without a response.
 
+/// Returns true when a completed query+response pair is pushed to the ring.
 fn correlate_db_buf(
     buf: &BytesMut,
     ring: &Arc<Mutex<RingBuffer>>,
     pending: &Arc<Mutex<PendingDb>>,
-) {
+) -> bool {
     if buf.len() < std::mem::size_of::<DbEvent>() {
-        return;
+        return false;
     }
     let raw: DbEvent = unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const DbEvent) };
 
@@ -522,6 +564,7 @@ fn correlate_db_buf(
             .entry((raw.pid, protocol.to_string()))
             .or_default()
             .push_back(record);
+        return false;
     } else {
         let response_text = match raw.protocol {
             DbProtocol::Postgres => parse_postgres_response(payload),
@@ -537,8 +580,10 @@ fn correlate_db_buf(
         if let Some(mut record) = completed {
             record.response = Some(response_text);
             ring.lock().unwrap().push(Event::Db(record));
+            return true;
         }
     }
+    false
 }
 
 /// Postgres client messages: 'Q' = simple query, 'P' = extended parse.
@@ -928,6 +973,7 @@ fn build_snapshot(
 async fn run_socket_listener(
     ring: Arc<Mutex<RingBuffer>>,
     pending_db: Arc<Mutex<PendingDb>>,
+    metrics: Arc<Metrics>,
     services: Vec<String>,
 ) {
     let _ = std::fs::remove_file(SOCKET_PATH);
@@ -945,9 +991,10 @@ async fn run_socket_listener(
         };
         let ring = Arc::clone(&ring);
         let pending_db = Arc::clone(&pending_db);
+        let metrics = Arc::clone(&metrics);
         let services = services.clone();
         tokio::spawn(async move {
-            handle_flush_conn(stream, ring, pending_db, services).await;
+            handle_flush_conn(stream, ring, pending_db, metrics, services).await;
         });
     }
 }
@@ -956,6 +1003,7 @@ async fn handle_flush_conn(
     stream: UnixStream,
     ring: Arc<Mutex<RingBuffer>>,
     pending_db: Arc<Mutex<PendingDb>>,
+    metrics: Arc<Metrics>,
     services: Vec<String>,
 ) {
     let (reader, mut writer) = stream.into_split();
@@ -992,6 +1040,7 @@ async fn handle_flush_conn(
 
     match snapshot.write(Path::new(&output_path)) {
         Ok(()) => {
+            metrics.inc_flushed();
             let _ = writer.write_all(format!("OK {count}\n").as_bytes()).await;
         }
         Err(e) => {

@@ -75,6 +75,7 @@ Three crates in the repo:
 | `helm/rewind/` | Done | Helm chart (DaemonSet + RBAC + ConfigMap); `helm install rewind helm/rewind` |
 | `Dockerfile` | Done | Multi-stage musl build → distroless runtime image; pushed to ghcr.io on tag |
 | `tests/` (integration) | Done | 11 CLI integration tests: inspect + export (OTLP + Jaeger) against fixture snapshot |
+| `src/metrics.rs` | Done | Prometheus `/metrics` + `/healthz` on :9090; counters per event type, ring buffer utilization gauge |
 
 ## Roadmap
 
@@ -94,6 +95,9 @@ Three crates in the repo:
 | 21 | Integration test (end-to-end capture → replay against demo Compose stack) | Done |
 | 22 | eBPF overhead measurement + security/threat model documentation | Done |
 | 23 | Cut `v0.1.0` tag — trigger release binary + Docker image publish | Pending |
+| 24 | Health probe + Prometheus metrics endpoint (`/healthz`, `/metrics` on :9090) | Done |
+| 25 | PII scrubbing config (`--redact-headers`, path allow-list) | Pending |
+| 26 | Multi-arch Docker image (amd64 + arm64) | Pending |
 
 
 

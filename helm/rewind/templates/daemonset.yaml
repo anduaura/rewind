@@ -74,6 +74,23 @@ spec:
                 configMapKeyRef:
                   name: {{ .Chart.Name }}-config
                   key: socket_path
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
           securityContext:
             privileged: true
             capabilities:
