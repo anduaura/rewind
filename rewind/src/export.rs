@@ -26,10 +26,16 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use crate::cli::ExportArgs;
+use crate::crypto;
 use crate::store::snapshot::{Event, Snapshot};
 
 pub async fn run(args: ExportArgs) -> Result<()> {
-    let snapshot = Snapshot::read(&args.snapshot)?;
+    let snapshot = Snapshot::read(&args.snapshot, crypto::resolve_key(args.key).as_deref())?;
+
+    let _ = crate::audit::log(&crate::audit::AuditEvent::Export {
+        snapshot: &args.snapshot.to_string_lossy(),
+        format: &args.format,
+    });
 
     let (doc, count) = match args.format.as_str() {
         "jaeger" => {

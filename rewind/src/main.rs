@@ -28,5 +28,10 @@ async fn main() -> Result<()> {
         Command::Inspect(args) => rewind::store::snapshot::inspect(args).await,
         Command::Export(args) => rewind::export::run(args).await,
         Command::Push(args) => rewind::push::run(args).await,
+        Command::Webhook(args) => rewind::webhook::run(args).await,
+        Command::Server(args) => rewind::server::run(args).await,
+        Command::PushAgent(args) => rewind::server::push_agent(args).await,
+        Command::Retention(args) => rewind::retention::run(args).await,
+        Command::Diff(args) => rewind::diff::run(args).await,
     }
 }

@@ -12,11 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod audit;
 pub mod capture;
 pub mod cli;
+pub mod crypto;
+pub mod diff;
 pub mod export;
 pub mod metrics;
 pub mod push;
 pub mod replay;
+pub mod retention;
 pub mod scrub;
+pub mod server;
 pub mod store;
+pub mod webhook;
