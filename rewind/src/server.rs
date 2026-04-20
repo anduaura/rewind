@@ -36,25 +36,59 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs;
 
 use crate::cli::{PushAgentArgs, ServerArgs};
 
+/// Maps bearer token → team name for RBAC.
+/// Loaded from a JSON file: {"token1": "team-a", "token2": "team-b"}
+#[derive(Clone, Default)]
+pub struct TokenRegistry(HashMap<String, String>);
+
+impl TokenRegistry {
+    pub fn load(path: &std::path::Path) -> Result<Self> {
+        let raw = std::fs::read_to_string(path)?;
+        let map: HashMap<String, String> = serde_json::from_str(&raw)?;
+        Ok(Self(map))
+    }
+
+    /// Resolve a bearer token → team name.
+    /// Returns None if the token is invalid.
+    pub fn resolve(&self, token: &str) -> Option<&str> {
+        self.0.get(token).map(|s| s.as_str())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 #[derive(Clone)]
 struct ServerState {
     storage: PathBuf,
+    /// Fallback single token (no team namespacing).
     token: Option<String>,
+    /// Multi-team RBAC registry (takes precedence over `token`).
+    registry: Arc<TokenRegistry>,
 }
 
 pub async fn run(args: ServerArgs) -> Result<()> {
     fs::create_dir_all(&args.storage).await?;
 
+    let registry = if let Some(p) = &args.tokens_file {
+        TokenRegistry::load(p)?
+    } else {
+        TokenRegistry::default()
+    };
+
     let state = Arc::new(ServerState {
         storage: args.storage.clone(),
         token: args.token.clone(),
+        registry: Arc::new(registry),
     });
 
     let app = Router::new()
@@ -62,12 +96,17 @@ pub async fn run(args: ServerArgs) -> Result<()> {
         .route("/snapshots", post(upload_snapshot))
         .route("/snapshots", get(list_snapshots))
         .route("/snapshots/{name}", get(download_snapshot))
-        .with_state(state);
+        .with_state(state.clone());
 
     println!("rewind server");
     println!("  listen:  {}", args.listen);
     println!("  storage: {}", args.storage.display());
-    if args.token.is_some() {
+    if args.tokens_file.is_some() {
+        println!(
+            "  auth:    RBAC token registry ({} teams)",
+            state.registry.0.len()
+        );
+    } else if args.token.is_some() {
         println!("  auth:    Authorization: Bearer <token> required");
     }
     println!("  POST /snapshots        — upload");
@@ -90,22 +129,34 @@ async fn upload_snapshot(
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
-    if !auth_ok(&state, &headers) {
-        return (StatusCode::UNAUTHORIZED, "missing or invalid token\n").into_response();
-    }
+    let team = match resolve_team(&state, &headers) {
+        Some(t) => t,
+        None => return (StatusCode::UNAUTHORIZED, "missing or invalid token\n").into_response(),
+    };
+
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, "empty body\n").into_response();
     }
 
     // Name: X-Rewind-Snapshot header, else timestamp-based.
-    let name = headers
+    let filename = headers
         .get("x-rewind-snapshot")
         .and_then(|v| v.to_str().ok())
         .filter(|s| is_safe_filename(s))
         .map(|s| s.to_string())
         .unwrap_or_else(snapshot_filename);
 
-    let dest = state.storage.join(&name);
+    // Team-namespaced storage sub-directory.
+    let dir = state.storage.join(&team);
+    if let Err(e) = fs::create_dir_all(&dir).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("mkdir failed: {e}\n"),
+        )
+            .into_response();
+    }
+
+    let dest = dir.join(&filename);
     if let Err(e) = fs::write(&dest, &body).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -115,12 +166,16 @@ async fn upload_snapshot(
     }
 
     let _ = crate::audit::log(&crate::audit::AuditEvent::Push {
-        snapshot: &name,
+        snapshot: &filename,
         destination: "server",
     });
 
-    eprintln!("[server] received {} ({} bytes)", name, body.len());
-    (StatusCode::CREATED, format!("{name}\n")).into_response()
+    eprintln!(
+        "[server] [{team}] received {} ({} bytes)",
+        filename,
+        body.len()
+    );
+    (StatusCode::CREATED, format!("{team}/{filename}\n")).into_response()
 }
 
 #[derive(Serialize)]
@@ -133,23 +188,19 @@ async fn list_snapshots(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if !auth_ok(&state, &headers) {
-        return (StatusCode::UNAUTHORIZED, "missing or invalid token\n").into_response();
-    }
-
-    let mut entries: Vec<SnapshotEntry> = Vec::new();
-    let mut dir = match fs::read_dir(&state.storage).await {
-        Ok(d) => d,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("read_dir failed: {e}\n"),
-            )
-                .into_response()
-        }
+    let team = match resolve_team(&state, &headers) {
+        Some(t) => t,
+        None => return (StatusCode::UNAUTHORIZED, "missing or invalid token\n").into_response(),
     };
 
-    while let Ok(Some(entry)) = dir.next_entry().await {
+    let dir = state.storage.join(&team);
+    let mut entries: Vec<SnapshotEntry> = Vec::new();
+    let mut read_dir = match fs::read_dir(&dir).await {
+        Ok(d) => d,
+        Err(_) => return Json(entries).into_response(), // empty team dir → empty list
+    };
+
+    while let Ok(Some(entry)) = read_dir.next_entry().await {
         let name = entry.file_name().to_string_lossy().to_string();
         if !name.ends_with(".rwd") {
             continue;
@@ -167,14 +218,15 @@ async fn download_snapshot(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    if !auth_ok(&state, &headers) {
-        return (StatusCode::UNAUTHORIZED, "missing or invalid token\n").into_response();
-    }
+    let team = match resolve_team(&state, &headers) {
+        Some(t) => t,
+        None => return (StatusCode::UNAUTHORIZED, "missing or invalid token\n").into_response(),
+    };
     if !is_safe_filename(&name) {
         return (StatusCode::BAD_REQUEST, "invalid filename\n").into_response();
     }
 
-    let path = state.storage.join(&name);
+    let path = state.storage.join(&team).join(&name);
     match fs::read(&path).await {
         Ok(data) => (StatusCode::OK, data).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "not found\n").into_response(),
@@ -183,17 +235,30 @@ async fn download_snapshot(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn auth_ok(state: &ServerState, headers: &HeaderMap) -> bool {
-    match &state.token {
-        None => true,
-        Some(expected) => {
-            let provided = headers
-                .get("authorization")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.strip_prefix("Bearer "))
-                .unwrap_or("");
-            provided == expected
+/// Resolve a request to a team name.
+/// - No auth configured → "default" team (open server)
+/// - RBAC registry active → look up token → team name
+/// - Single token mode → token must match → "default" team
+fn resolve_team(state: &ServerState, headers: &HeaderMap) -> Option<String> {
+    let bearer = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("");
+
+    if !state.registry.is_empty() {
+        // RBAC mode: token must be in registry.
+        state.registry.resolve(bearer).map(|t| t.to_string())
+    } else if let Some(expected) = &state.token {
+        // Single-token mode.
+        if bearer == expected {
+            Some("default".to_string())
+        } else {
+            None
         }
+    } else {
+        // Open server (no auth configured).
+        Some("default".to_string())
     }
 }
 
@@ -277,34 +342,58 @@ mod tests {
         assert!(snapshot_filename().ends_with(".rwd"));
     }
 
-    #[test]
-    fn auth_ok_when_no_token() {
-        let state = ServerState {
+    fn make_state(token: Option<&str>, registry: TokenRegistry) -> ServerState {
+        ServerState {
             storage: PathBuf::from("/tmp"),
-            token: None,
-        };
-        assert!(auth_ok(&state, &HeaderMap::new()));
+            token: token.map(|s| s.to_string()),
+            registry: Arc::new(registry),
+        }
     }
 
     #[test]
-    fn auth_fails_wrong_token() {
-        let state = ServerState {
-            storage: PathBuf::from("/tmp"),
-            token: Some("secret".to_string()),
-        };
+    fn open_server_resolves_to_default() {
+        let state = make_state(None, TokenRegistry::default());
+        assert_eq!(
+            resolve_team(&state, &HeaderMap::new()),
+            Some("default".to_string())
+        );
+    }
+
+    #[test]
+    fn single_token_wrong_returns_none() {
+        let state = make_state(Some("secret"), TokenRegistry::default());
         let mut h = HeaderMap::new();
         h.insert("authorization", "Bearer wrong".parse().unwrap());
-        assert!(!auth_ok(&state, &h));
+        assert!(resolve_team(&state, &h).is_none());
     }
 
     #[test]
-    fn auth_passes_correct_token() {
-        let state = ServerState {
-            storage: PathBuf::from("/tmp"),
-            token: Some("secret".to_string()),
-        };
+    fn single_token_correct_returns_default() {
+        let state = make_state(Some("secret"), TokenRegistry::default());
         let mut h = HeaderMap::new();
         h.insert("authorization", "Bearer secret".parse().unwrap());
-        assert!(auth_ok(&state, &h));
+        assert_eq!(resolve_team(&state, &h), Some("default".to_string()));
+    }
+
+    #[test]
+    fn rbac_registry_maps_token_to_team() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("tok-a".to_string(), "team-alpha".to_string());
+        let reg = TokenRegistry(map);
+        let state = make_state(None, reg);
+        let mut h = HeaderMap::new();
+        h.insert("authorization", "Bearer tok-a".parse().unwrap());
+        assert_eq!(resolve_team(&state, &h), Some("team-alpha".to_string()));
+    }
+
+    #[test]
+    fn rbac_registry_unknown_token_returns_none() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("tok-a".to_string(), "team-alpha".to_string());
+        let reg = TokenRegistry(map);
+        let state = make_state(None, reg);
+        let mut h = HeaderMap::new();
+        h.insert("authorization", "Bearer tok-unknown".parse().unwrap());
+        assert!(resolve_team(&state, &h).is_none());
     }
 }

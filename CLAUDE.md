@@ -108,7 +108,7 @@ Three crates in the repo:
 | 29 | Auto-trigger on alert — webhook endpoint so PagerDuty/Opsgenie can flush on incident open | Done |
 | 30 | Central collection server (`rewind server`) — agents push snapshots over HTTP; replaces `kubectl cp` | Done |
 | 31 | Snapshot retention + TTL cleanup — max-size and max-age policies to prevent disk fill on prod nodes | Done |
-| 32 | RBAC / access control — token-based auth on the collection server; teams scoped to their own services | Pending |
+| 32 | RBAC / access control — token-based auth on the collection server; teams scoped to their own services | Done |
 | 33 | VS Code extension — browse, inspect, and replay `.rwd` files directly from the editor | Pending |
 | 34 | Replay diff — compare two replays side-by-side; surface divergences in DB responses and timing | Pending |
 | 35 | SaaS collection plane — hosted server + web UI; teams push snapshots, share replay links, view timelines | Pending |

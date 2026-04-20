@@ -200,9 +200,14 @@ pub struct ServerArgs {
     #[arg(long, default_value = "/var/rewind/snapshots")]
     pub storage: PathBuf,
 
-    /// Bearer token for upload/download auth (or REWIND_SERVER_TOKEN env var)
+    /// Single Bearer token for upload/download auth (or REWIND_SERVER_TOKEN env var)
     #[arg(long, env = "REWIND_SERVER_TOKEN")]
     pub token: Option<String>,
+
+    /// Path to JSON token registry for RBAC: {"<token>": "<team>", ...}
+    /// When set, each token maps to a team namespace; takes precedence over --token
+    #[arg(long)]
+    pub tokens_file: Option<PathBuf>,
 }
 
 #[derive(Args)]
