@@ -33,5 +33,7 @@ async fn main() -> Result<()> {
         Command::PushAgent(args) => rewind::server::push_agent(args).await,
         Command::Retention(args) => rewind::retention::run(args).await,
         Command::Diff(args) => rewind::diff::run(args).await,
+        Command::Scrub(args) => rewind::scrub::run(args).await,
+        Command::Verify(args) => rewind::verify::run(args).await,
     }
 }

@@ -25,4 +25,5 @@ pub mod retention;
 pub mod scrub;
 pub mod server;
 pub mod store;
+pub mod verify;
 pub mod webhook;

@@ -51,6 +51,10 @@ pub enum Command {
     Retention(RetentionArgs),
     /// Compare two .rwd snapshots and surface divergences
     Diff(DiffArgs),
+    /// Scrub PII from a .rwd snapshot — redact headers, strip bodies, filter paths
+    Scrub(ScrubArgs),
+    /// Verify snapshot integrity against its SHA-256 manifest
+    Verify(VerifyArgs),
 }
 
 #[derive(Args)]
@@ -210,6 +214,14 @@ pub struct ServerArgs {
     /// When set, each token maps to a team namespace; takes precedence over --token
     #[arg(long)]
     pub tokens_file: Option<PathBuf>,
+
+    /// Path to TLS certificate file (PEM). Enables HTTPS when provided with --tls-key.
+    #[arg(long)]
+    pub tls_cert: Option<PathBuf>,
+
+    /// Path to TLS private key file (PEM)
+    #[arg(long)]
+    pub tls_key: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -268,4 +280,52 @@ pub struct DiffArgs {
     /// Decryption passphrase for encrypted snapshots (overrides REWIND_SNAPSHOT_KEY)
     #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
     pub key: Option<String>,
+}
+
+#[derive(Args)]
+pub struct ScrubArgs {
+    /// Source .rwd snapshot (read-only; original is never modified)
+    pub snapshot: PathBuf,
+
+    /// Destination for the scrubbed snapshot
+    pub output: PathBuf,
+
+    /// Header names to redact (comma-separated). Empty = default safe list
+    /// (authorization, cookie, set-cookie, x-api-key, x-auth-token, proxy-authorization)
+    #[arg(long, value_delimiter = ',')]
+    pub redact_headers: Vec<String>,
+
+    /// Only keep HTTP/gRPC events with these path prefixes (comma-separated; empty = keep all)
+    #[arg(long, value_delimiter = ',')]
+    pub allow_paths: Vec<String>,
+
+    /// Strip all request/response bodies (sets to null)
+    #[arg(long)]
+    pub redact_body: bool,
+
+    /// Print scrub summary as JSON
+    #[arg(long)]
+    pub json: bool,
+
+    /// Decryption passphrase (also used to re-encrypt output; overrides REWIND_SNAPSHOT_KEY)
+    #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
+    pub key: Option<String>,
+}
+
+#[derive(Args)]
+pub struct VerifyArgs {
+    /// Path to the .rwd snapshot file to verify
+    pub snapshot: PathBuf,
+
+    /// Write a new SHA-256 manifest (<snapshot>.sha256) instead of checking one
+    #[arg(long)]
+    pub write: bool,
+
+    /// Exit 0 when no manifest file exists (instead of exit 2)
+    #[arg(long)]
+    pub allow_missing: bool,
+
+    /// Print result as JSON
+    #[arg(long)]
+    pub json: bool,
 }

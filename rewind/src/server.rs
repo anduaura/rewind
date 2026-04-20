@@ -44,6 +44,83 @@ use tokio::fs;
 
 use crate::cli::{PushAgentArgs, ServerArgs};
 
+// ── TLS helpers ───────────────────────────────────────────────────────────────
+
+fn load_tls_config(
+    cert_path: &std::path::Path,
+    key_path: &std::path::Path,
+) -> Result<rustls::ServerConfig> {
+    let cert_bytes = std::fs::read(cert_path)
+        .map_err(|e| anyhow::anyhow!("reading cert {:?}: {e}", cert_path))?;
+    let key_bytes =
+        std::fs::read(key_path).map_err(|e| anyhow::anyhow!("reading key {:?}: {e}", key_path))?;
+
+    let certs: Vec<rustls::pki_types::CertificateDer<'static>> =
+        rustls_pemfile::certs(&mut cert_bytes.as_slice())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("parsing cert: {e}"))?
+            .into_iter()
+            .map(|c| c.into_owned())
+            .collect();
+
+    let key = rustls_pemfile::private_key(&mut key_bytes.as_slice())
+        .map_err(|e| anyhow::anyhow!("parsing key: {e}"))?
+        .ok_or_else(|| anyhow::anyhow!("no private key found in {:?}", key_path))?
+        .clone_key();
+
+    Ok(rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)?)
+}
+
+async fn serve_tls(
+    app: axum::Router,
+    addr: std::net::SocketAddr,
+    cert: &std::path::Path,
+    key: &std::path::Path,
+) -> Result<()> {
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+    use hyper_util::server::conn::auto::Builder as HyperBuilder;
+    use tokio_rustls::TlsAcceptor;
+    use tower::ServiceExt as _;
+
+    let tls_cfg = load_tls_config(cert, key)?;
+    let acceptor = TlsAcceptor::from(std::sync::Arc::new(tls_cfg));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    loop {
+        let (tcp, peer) = listener.accept().await?;
+        let acceptor = acceptor.clone();
+        let app = app.clone();
+
+        tokio::spawn(async move {
+            let tls = match acceptor.accept(tcp).await {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[server] TLS handshake failed from {peer}: {e}");
+                    return;
+                }
+            };
+            let io = TokioIo::new(tls);
+            let svc =
+                hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                    let app = app.clone();
+                    async move {
+                        let (parts, body) = req.into_parts();
+                        let req = hyper::Request::from_parts(parts, axum::body::Body::new(body));
+                        app.oneshot(req).await
+                    }
+                });
+            if let Err(e) = HyperBuilder::new(TokioExecutor::new())
+                .serve_connection_with_upgrades(io, svc)
+                .await
+            {
+                eprintln!("[server] connection error: {e}");
+            }
+        });
+    }
+}
+
 /// Maps bearer token → team name for RBAC.
 /// Loaded from a JSON file: {"token1": "team-a", "token2": "team-b"}
 #[derive(Clone, Default)]
@@ -113,8 +190,25 @@ pub async fn run(args: ServerArgs) -> Result<()> {
     println!("  GET  /snapshots        — list");
     println!("  GET  /snapshots/<name> — download");
 
-    let listener = tokio::net::TcpListener::bind(&args.listen).await?;
-    axum::serve(listener, app).await?;
+    let addr: std::net::SocketAddr = args
+        .listen
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid listen address: {}", args.listen))?;
+
+    match (&args.tls_cert, &args.tls_key) {
+        (Some(cert), Some(key)) => {
+            println!("  tls:     enabled (cert={})", cert.display());
+            serve_tls(app, addr, cert, key).await?;
+        }
+        (None, None) => {
+            println!("  tls:     disabled (use --tls-cert + --tls-key to enable HTTPS)");
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            axum::serve(listener, app).await?;
+        }
+        _ => {
+            anyhow::bail!("--tls-cert and --tls-key must be provided together");
+        }
+    }
     Ok(())
 }
 
