@@ -212,6 +212,14 @@ pub struct ServerArgs {
     /// When set, each token maps to a team namespace; takes precedence over --token
     #[arg(long)]
     pub tokens_file: Option<PathBuf>,
+
+    /// Path to TLS certificate file (PEM). Enables HTTPS when provided with --tls-key.
+    #[arg(long)]
+    pub tls_cert: Option<PathBuf>,
+
+    /// Path to TLS private key file (PEM)
+    #[arg(long)]
+    pub tls_key: Option<PathBuf>,
 }
 
 #[derive(Args)]
