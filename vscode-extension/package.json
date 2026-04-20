@@ -1,0 +1,103 @@
+{
+  "name": "rewind",
+  "displayName": "rewind — Incident Replay",
+  "description": "Browse, inspect, and replay .rwd snapshot files produced by rewind",
+  "version": "0.1.0",
+  "publisher": "anduaura",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anduaura/rewind"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other", "Debuggers"],
+  "keywords": ["rewind", "replay", "incident", "ebpf", "debugging"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "rwd",
+        "aliases": ["Rewind Snapshot", "rwd"],
+        "extensions": [".rwd"],
+        "icon": {
+          "light": "./media/rewind-light.svg",
+          "dark": "./media/rewind-dark.svg"
+        }
+      }
+    ],
+    "customEditors": [
+      {
+        "viewType": "rewind.snapshotViewer",
+        "displayName": "Rewind Snapshot Viewer",
+        "selector": [{ "filenamePattern": "*.rwd" }],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "rewind.openSnapshot",
+        "title": "Rewind: Open Snapshot",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "rewind.replaySnapshot",
+        "title": "Rewind: Replay Snapshot",
+        "icon": "$(play)"
+      },
+      {
+        "command": "rewind.inspectSnapshot",
+        "title": "Rewind: Inspect Snapshot (CLI)",
+        "icon": "$(info)"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "when": "resourceExtname == .rwd",
+          "command": "rewind.openSnapshot",
+          "group": "rewind"
+        },
+        {
+          "when": "resourceExtname == .rwd",
+          "command": "rewind.replaySnapshot",
+          "group": "rewind"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Rewind",
+      "properties": {
+        "rewind.executablePath": {
+          "type": "string",
+          "default": "rewind",
+          "description": "Path to the rewind CLI executable"
+        },
+        "rewind.composeFile": {
+          "type": "string",
+          "default": "docker-compose.yml",
+          "description": "Default Docker Compose file for replay"
+        },
+        "rewind.snapshotKey": {
+          "type": "string",
+          "default": "",
+          "description": "Decryption passphrase for encrypted snapshots (corresponds to REWIND_SNAPSHOT_KEY)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "lint": "eslint src"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.24.0"
+  }
+}
