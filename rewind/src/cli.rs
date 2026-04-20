@@ -43,6 +43,10 @@ pub enum Command {
     Push(PushArgs),
     /// Run an HTTP webhook server that triggers flush when PagerDuty/Opsgenie fires
     Webhook(WebhookArgs),
+    /// Run the central collection server — agents push snapshots here over HTTP
+    Server(ServerArgs),
+    /// Push a snapshot to a central rewind server (replaces kubectl cp)
+    PushAgent(PushAgentArgs),
 }
 
 #[derive(Args)]
@@ -182,4 +186,33 @@ pub struct WebhookArgs {
     /// X-Rewind-Secret: <secret> header (or REWIND_WEBHOOK_SECRET env var)
     #[arg(long, env = "REWIND_WEBHOOK_SECRET")]
     pub secret: Option<String>,
+}
+
+#[derive(Args)]
+pub struct ServerArgs {
+    /// Address to listen on
+    #[arg(long, default_value = "0.0.0.0:9092")]
+    pub listen: String,
+
+    /// Directory to store received snapshots
+    #[arg(long, default_value = "/var/rewind/snapshots")]
+    pub storage: PathBuf,
+
+    /// Bearer token for upload/download auth (or REWIND_SERVER_TOKEN env var)
+    #[arg(long, env = "REWIND_SERVER_TOKEN")]
+    pub token: Option<String>,
+}
+
+#[derive(Args)]
+pub struct PushAgentArgs {
+    /// Path to the .rwd snapshot file to push
+    pub snapshot: PathBuf,
+
+    /// URL of the rewind collection server (e.g. http://collector:9092)
+    #[arg(long)]
+    pub server: String,
+
+    /// Bearer token (or REWIND_SERVER_TOKEN env var)
+    #[arg(long, env = "REWIND_SERVER_TOKEN")]
+    pub token: Option<String>,
 }

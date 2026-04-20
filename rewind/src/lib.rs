@@ -21,5 +21,6 @@ pub mod metrics;
 pub mod push;
 pub mod replay;
 pub mod scrub;
+pub mod server;
 pub mod store;
 pub mod webhook;

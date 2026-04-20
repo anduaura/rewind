@@ -29,5 +29,7 @@ async fn main() -> Result<()> {
         Command::Export(args) => rewind::export::run(args).await,
         Command::Push(args) => rewind::push::run(args).await,
         Command::Webhook(args) => rewind::webhook::run(args).await,
+        Command::Server(args) => rewind::server::run(args).await,
+        Command::PushAgent(args) => rewind::server::push_agent(args).await,
     }
 }
