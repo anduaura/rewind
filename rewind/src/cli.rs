@@ -49,6 +49,8 @@ pub enum Command {
     PushAgent(PushAgentArgs),
     /// Enforce max-age and max-size retention policies on a snapshot directory
     Retention(RetentionArgs),
+    /// Compare two .rwd snapshots and surface divergences
+    Diff(DiffArgs),
 }
 
 #[derive(Args)]
@@ -245,4 +247,25 @@ pub struct RetentionArgs {
     /// Print result as JSON
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Args)]
+pub struct DiffArgs {
+    /// Baseline .rwd snapshot (the reference recording)
+    pub baseline: PathBuf,
+
+    /// Candidate .rwd snapshot (the one being compared)
+    pub candidate: PathBuf,
+
+    /// Output result as JSON
+    #[arg(long)]
+    pub json: bool,
+
+    /// Exit 0 even when divergences are found (useful in scripts)
+    #[arg(long)]
+    pub allow_divergence: bool,
+
+    /// Decryption passphrase for encrypted snapshots (overrides REWIND_SNAPSHOT_KEY)
+    #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
+    pub key: Option<String>,
 }
