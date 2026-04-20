@@ -53,6 +53,8 @@ pub enum Command {
     Diff(DiffArgs),
     /// Scrub PII from a .rwd snapshot — redact headers, strip bodies, filter paths
     Scrub(ScrubArgs),
+    /// Verify snapshot integrity against its SHA-256 manifest
+    Verify(VerifyArgs),
 }
 
 #[derive(Args)]
@@ -308,4 +310,22 @@ pub struct ScrubArgs {
     /// Decryption passphrase (also used to re-encrypt output; overrides REWIND_SNAPSHOT_KEY)
     #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
     pub key: Option<String>,
+}
+
+#[derive(Args)]
+pub struct VerifyArgs {
+    /// Path to the .rwd snapshot file to verify
+    pub snapshot: PathBuf,
+
+    /// Write a new SHA-256 manifest (<snapshot>.sha256) instead of checking one
+    #[arg(long)]
+    pub write: bool,
+
+    /// Exit 0 when no manifest file exists (instead of exit 2)
+    #[arg(long)]
+    pub allow_missing: bool,
+
+    /// Print result as JSON
+    #[arg(long)]
+    pub json: bool,
 }

@@ -119,7 +119,7 @@ Three crates in the repo:
 | 40 | Package distribution — Homebrew tap + apt/deb + rpm packages for frictionless installation | Done |
 | 41 | Post-hoc PII scrub (`rewind scrub src.rwd dst.rwd`) — redact headers, strip bodies, filter paths on stored snapshots | Done |
 | 42 | TLS for collection server (`--tls-cert`/`--tls-key` on `rewind server`) | Done |
-| 43 | Snapshot integrity verification (`rewind verify`) — SHA-256 manifest + tamper detection | Pending |
+| 43 | Snapshot integrity verification (`rewind verify`) — SHA-256 manifest + tamper detection | Done |
 
 ## Enterprise readiness goal
 
