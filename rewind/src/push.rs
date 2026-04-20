@@ -56,6 +56,11 @@ pub async fn run(args: PushArgs) -> Result<()> {
         .await
         .with_context(|| format!("upload to {dest} failed"))?;
 
+    let _ = crate::audit::log(&crate::audit::AuditEvent::Push {
+        snapshot: &args.snapshot.to_string_lossy(),
+        destination: &dest,
+    });
+
     println!("Done.");
     Ok(())
 }

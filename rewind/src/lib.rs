@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod audit;
 pub mod capture;
 pub mod cli;
 pub mod crypto;

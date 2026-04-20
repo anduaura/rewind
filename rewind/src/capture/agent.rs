@@ -67,6 +67,13 @@ pub async fn run(args: RecordArgs) -> Result<()> {
     if snapshot_key.is_some() {
         println!("  encrypt:  enabled (age/AES-256-GCM)");
     }
+
+    let _ = crate::audit::log(&crate::audit::AuditEvent::CaptureStart {
+        services: &args.services,
+        output: &args.output.to_string_lossy(),
+        encrypted: snapshot_key.is_some(),
+    });
+
     let ring: Arc<Mutex<RingBuffer>> = Arc::new(Mutex::new(RingBuffer::new(RING_MAX_EVENTS)));
     let pending_db: Arc<Mutex<PendingDb>> = Arc::new(Mutex::new(StdHashMap::new()));
     let metrics: Arc<Metrics> = Arc::new(Metrics::new(RING_MAX_EVENTS));
@@ -152,6 +159,10 @@ pub async fn run(args: RecordArgs) -> Result<()> {
         args.output.display()
     );
     snapshot.write(&args.output, snapshot_key.as_deref())?;
+    let _ = crate::audit::log(&crate::audit::AuditEvent::CaptureStop {
+        output: &args.output.to_string_lossy(),
+        events_flushed: snapshot.events.len(),
+    });
     println!("Done.");
     let _ = std::fs::remove_file(SOCKET_PATH);
 
@@ -1230,6 +1241,11 @@ async fn handle_flush_conn(
     match snapshot.write(Path::new(&output_path), snapshot_key.as_deref()) {
         Ok(()) => {
             metrics.inc_flushed();
+            let _ = crate::audit::log(&crate::audit::AuditEvent::Flush {
+                output: &output_path,
+                window_secs,
+                events_flushed: count,
+            });
             let _ = writer.write_all(format!("OK {count}\n").as_bytes()).await;
         }
         Err(e) => {

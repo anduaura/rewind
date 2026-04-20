@@ -25,7 +25,14 @@ use crate::replay::network::MockServer;
 use crate::store::snapshot::{Event, HttpRecord, Snapshot};
 
 pub async fn run(args: ReplayArgs) -> Result<()> {
-    let snapshot = Snapshot::read(&args.snapshot, crypto::resolve_key(args.key).as_deref())?;
+    let key = crypto::resolve_key(args.key);
+    let snapshot = Snapshot::read(&args.snapshot, key.as_deref())?;
+
+    let _ = crate::audit::log(&crate::audit::AuditEvent::ReplayStart {
+        snapshot: &args.snapshot.to_string_lossy(),
+        compose: &args.compose.to_string_lossy(),
+        encrypted: key.is_some(),
+    });
 
     println!("rewind replay");
     println!("  snapshot: {}", args.snapshot.display());
@@ -141,6 +148,11 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
     let resp = builder.send().await.context("trigger request failed")?;
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
+
+    let _ = crate::audit::log(&crate::audit::AuditEvent::ReplayComplete {
+        snapshot: &args.snapshot.to_string_lossy(),
+        status_code: status.as_u16(),
+    });
 
     println!();
     println!("── Replay result ──────────────────────────────────────────");

@@ -274,6 +274,11 @@ pub async fn inspect(args: InspectArgs) -> Result<()> {
         crate::crypto::resolve_key(args.key).as_deref(),
     )?;
 
+    let _ = crate::audit::log(&crate::audit::AuditEvent::Inspect {
+        snapshot: &args.snapshot.to_string_lossy(),
+        event_count: snapshot.events.len(),
+    });
+
     let http_count = snapshot
         .events
         .iter()
