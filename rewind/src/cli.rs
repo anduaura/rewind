@@ -41,6 +41,8 @@ pub enum Command {
     Export(ExportArgs),
     /// Upload a .rwd snapshot to cloud object storage (s3://, gs://, az://)
     Push(PushArgs),
+    /// Run an HTTP webhook server that triggers flush when PagerDuty/Opsgenie fires
+    Webhook(WebhookArgs),
 }
 
 #[derive(Args)]
@@ -160,4 +162,24 @@ pub struct PushArgs {
     /// Destination URL: s3://bucket/key, gs://bucket/key, or az://container/key.
     /// A trailing slash appends the snapshot filename automatically.
     pub destination: String,
+}
+
+#[derive(Args)]
+pub struct WebhookArgs {
+    /// Address to listen on
+    #[arg(long, default_value = "0.0.0.0:9091")]
+    pub listen: String,
+
+    /// Output directory for auto-triggered snapshots
+    #[arg(long, default_value = ".")]
+    pub output_dir: PathBuf,
+
+    /// Flush window to capture on alert (e.g. "5m", "30s")
+    #[arg(long, default_value = "5m")]
+    pub window: String,
+
+    /// Optional shared secret — webhook requests must include
+    /// X-Rewind-Secret: <secret> header (or REWIND_WEBHOOK_SECRET env var)
+    #[arg(long, env = "REWIND_WEBHOOK_SECRET")]
+    pub secret: Option<String>,
 }
