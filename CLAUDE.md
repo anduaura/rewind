@@ -117,6 +117,9 @@ Three crates in the repo:
 | 38 | Grafana dashboard bundle — pre-built dashboards for the `/metrics` Prometheus endpoint | Done |
 | 39 | Kafka capture — eBPF producer/consumer wire protocol (port 9092) capture | Done |
 | 40 | Package distribution — Homebrew tap + apt/deb + rpm packages for frictionless installation | Done |
+| 41 | Post-hoc PII scrub (`rewind scrub src.rwd dst.rwd`) — redact headers, strip bodies, filter paths on stored snapshots | Done |
+| 42 | TLS for collection server (`--tls-cert`/`--tls-key` on `rewind server`) | Pending |
+| 43 | Snapshot integrity verification (`rewind verify`) — SHA-256 manifest + tamper detection | Pending |
 
 ## Enterprise readiness goal
 
