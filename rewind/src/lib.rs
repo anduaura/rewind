@@ -20,6 +20,7 @@ pub mod export;
 pub mod metrics;
 pub mod push;
 pub mod replay;
+pub mod retention;
 pub mod scrub;
 pub mod server;
 pub mod store;

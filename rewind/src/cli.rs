@@ -47,6 +47,8 @@ pub enum Command {
     Server(ServerArgs),
     /// Push a snapshot to a central rewind server (replaces kubectl cp)
     PushAgent(PushAgentArgs),
+    /// Enforce max-age and max-size retention policies on a snapshot directory
+    Retention(RetentionArgs),
 }
 
 #[derive(Args)]
@@ -215,4 +217,27 @@ pub struct PushAgentArgs {
     /// Bearer token (or REWIND_SERVER_TOKEN env var)
     #[arg(long, env = "REWIND_SERVER_TOKEN")]
     pub token: Option<String>,
+}
+
+#[derive(Args)]
+pub struct RetentionArgs {
+    /// Directory containing .rwd snapshot files
+    #[arg(long, default_value = "/var/rewind/snapshots")]
+    pub dir: PathBuf,
+
+    /// Delete snapshots older than this duration (e.g. 7d, 24h, 30m)
+    #[arg(long)]
+    pub max_age: Option<String>,
+
+    /// Delete oldest snapshots until total size is under this limit (e.g. 10GB, 500MB)
+    #[arg(long)]
+    pub max_size: Option<String>,
+
+    /// Actually delete files (default: dry-run, only prints what would be deleted)
+    #[arg(long)]
+    pub delete: bool,
+
+    /// Print result as JSON
+    #[arg(long)]
+    pub json: bool,
 }
