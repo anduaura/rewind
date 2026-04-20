@@ -30,9 +30,9 @@
 use anyhow::Result;
 use axum::{
     body::Bytes,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Json},
+    response::{Html, IntoResponse, Json},
     routing::{get, post},
     Router,
 };
@@ -41,6 +41,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs;
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::cli::{PushAgentArgs, ServerArgs};
 
@@ -144,6 +145,12 @@ impl TokenRegistry {
     }
 }
 
+struct ShareEntry {
+    team: String,
+    name: String,
+    expires_at: u64,
+}
+
 #[derive(Clone)]
 struct ServerState {
     storage: PathBuf,
@@ -151,6 +158,8 @@ struct ServerState {
     token: Option<String>,
     /// Multi-team RBAC registry (takes precedence over `token`).
     registry: Arc<TokenRegistry>,
+    /// In-memory share tokens → (team, name, expiry unix secs).
+    shares: Arc<TokioMutex<HashMap<String, ShareEntry>>>,
 }
 
 pub async fn run(args: ServerArgs) -> Result<()> {
@@ -166,6 +175,7 @@ pub async fn run(args: ServerArgs) -> Result<()> {
         storage: args.storage.clone(),
         token: args.token.clone(),
         registry: Arc::new(registry),
+        shares: Arc::new(TokioMutex::new(HashMap::new())),
     });
 
     let app = Router::new()
@@ -173,6 +183,10 @@ pub async fn run(args: ServerArgs) -> Result<()> {
         .route("/snapshots", post(upload_snapshot))
         .route("/snapshots", get(list_snapshots))
         .route("/snapshots/{name}", get(download_snapshot))
+        .route("/snapshots/{name}/share", post(create_share_link))
+        .route("/ui", get(ui_dashboard))
+        .route("/ui/{name}", get(ui_snapshot_detail))
+        .route("/share/{token}", get(download_shared))
         .with_state(state.clone());
 
     println!("rewind server");
@@ -373,6 +387,250 @@ fn snapshot_filename() -> String {
     format!("incident-{secs}.rwd")
 }
 
+// ── Web UI handlers ───────────────────────────────────────────────────────────
+
+async fn ui_dashboard(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let qt = params.get("token").map_or("", |s| s.as_str());
+    let team = match resolve_team_ui(&state, &headers, qt) {
+        Some(t) => t,
+        None => {
+            return Html(ui_page(
+                "unauthorized",
+                "<p>Append <code>?token=&lt;tok&gt;</code> to the URL.</p>",
+            ))
+            .into_response()
+        }
+    };
+
+    let dir = state.storage.join(&team);
+    let mut rows = String::new();
+    if let Ok(mut rd) = fs::read_dir(&dir).await {
+        let mut entries: Vec<(String, u64)> = Vec::new();
+        while let Ok(Some(e)) = rd.next_entry().await {
+            let name = e.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".rwd") {
+                continue;
+            }
+            let sz = e.metadata().await.map(|m| m.len()).unwrap_or(0);
+            entries.push((name, sz));
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let tqs = if qt.is_empty() {
+            String::new()
+        } else {
+            format!("?token={qt}")
+        };
+        for (name, sz) in &entries {
+            rows.push_str(&format!(
+                "<tr><td><a href=\"/ui/{name}{tqs}\">{name}</a></td><td>{} KB</td><td><a href=\"/share/{name}{tqs}\">detail</a></td></tr>",
+                sz / 1024
+            ));
+        }
+    }
+    let body = format!("<h2>Team: {team}</h2><table border=1 cellpadding=6><tr><th>Snapshot</th><th>Size</th><th>Actions</th></tr>{rows}</table>");
+    Html(ui_page(&format!("rewind — {team}"), &body)).into_response()
+}
+
+async fn ui_snapshot_detail(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let qt = params.get("token").map_or("", |s| s.as_str());
+    let team = match resolve_team_ui(&state, &headers, qt) {
+        Some(t) => t,
+        None => return Html(ui_page("unauthorized", "<p>Unauthorized.</p>")).into_response(),
+    };
+    if !is_safe_filename(&name) {
+        return Html(ui_page("error", "<p>Invalid snapshot name.</p>")).into_response();
+    }
+    let path = state.storage.join(&team).join(&name);
+    let data = match fs::read(&path).await {
+        Ok(d) => d,
+        Err(_) => return Html(ui_page("not found", "<p>Snapshot not found.</p>")).into_response(),
+    };
+
+    let size_kb = data.len() / 1024;
+    let tqs = if qt.is_empty() {
+        String::new()
+    } else {
+        format!("?token={qt}")
+    };
+
+    let detail = if crate::crypto::is_encrypted(&data) {
+        format!("<p><b>Encrypted</b> snapshot ({size_kb} KB). <a href=\"/snapshots/{name}{tqs}\">Download</a> and decrypt with <code>rewind inspect --key</code>.</p>")
+    } else if let Ok(snap) = serde_json::from_slice::<crate::store::snapshot::Snapshot>(&data) {
+        let (mut http, mut db, mut grpc, mut sys) = (0usize, 0usize, 0usize, 0usize);
+        let mut rows = String::new();
+        use crate::store::snapshot::Event;
+        for (i, ev) in snap.events.iter().enumerate() {
+            if i < 50 {
+                let row = match ev {
+                    Event::Http(h) => {
+                        http += 1;
+                        format!(
+                            "<tr><td>{i}</td><td>HTTP</td><td>{} {} {:?}</td></tr>",
+                            h.method, h.path, h.status_code
+                        )
+                    }
+                    Event::Db(d) => {
+                        db += 1;
+                        format!("<tr><td>{i}</td><td>DB</td><td>{}</td></tr>", d.query)
+                    }
+                    Event::Grpc(g) => {
+                        grpc += 1;
+                        format!("<tr><td>{i}</td><td>gRPC</td><td>{}</td></tr>", g.path)
+                    }
+                    Event::Syscall(s) => {
+                        sys += 1;
+                        format!(
+                            "<tr><td>{i}</td><td>SYSCALL</td><td>{} → {}</td></tr>",
+                            s.kind, s.return_value
+                        )
+                    }
+                };
+                rows.push_str(&row);
+            } else {
+                match ev {
+                    Event::Http(_) => http += 1,
+                    Event::Db(_) => db += 1,
+                    Event::Grpc(_) => grpc += 1,
+                    Event::Syscall(_) => sys += 1,
+                }
+            }
+        }
+        let share_url = format!("/snapshots/{name}/share?token={qt}");
+        format!(
+            "<p>{size_kb} KB &nbsp;|&nbsp; services: {} &nbsp;|&nbsp; HTTP:{http} DB:{db} gRPC:{grpc} SYS:{sys}</p>\
+             <p><a href=\"/snapshots/{name}{tqs}\">⬇ Download</a> &nbsp; <a href=\"{share_url}\">🔗 Share (24h)</a></p>\
+             <table border=1 cellpadding=4><tr><th>#</th><th>Type</th><th>Detail</th></tr>{rows}</table>",
+            snap.services.join(", ")
+        )
+    } else {
+        format!("<p>Could not parse snapshot ({size_kb} KB). <a href=\"/snapshots/{name}{tqs}\">Download</a>.</p>")
+    };
+
+    let back = format!("<p><a href=\"/ui{tqs}\">← back</a></p>");
+    Html(ui_page(
+        &format!("rewind — {name}"),
+        &format!("{back}<h2>{name}</h2>{detail}"),
+    ))
+    .into_response()
+}
+
+async fn create_share_link(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let qt = params.get("token").map_or("", |s| s.as_str());
+    let team = match resolve_team_ui(&state, &headers, qt) {
+        Some(t) => t,
+        None => return (StatusCode::UNAUTHORIZED, "unauthorized\n").into_response(),
+    };
+    if !is_safe_filename(&name) {
+        return (StatusCode::BAD_REQUEST, "invalid filename\n").into_response();
+    }
+    if !state.storage.join(&team).join(&name).exists() {
+        return (StatusCode::NOT_FOUND, "not found\n").into_response();
+    }
+
+    let token = random_token();
+    let expires_at = unix_now() + 86_400;
+    state.shares.lock().await.insert(
+        token.clone(),
+        ShareEntry {
+            team,
+            name: name.clone(),
+            expires_at,
+        },
+    );
+
+    let accept = headers
+        .get("accept")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if accept.contains("text/html") || params.contains_key("token") {
+        let url = format!("/share/{token}");
+        let body = format!("<h2>Share link for {name}</h2><p>Valid 24 hours:</p><pre>{url}</pre><p><a href=\"{url}\">{url}</a></p>");
+        Html(ui_page("share link", &body)).into_response()
+    } else {
+        Json(serde_json::json!({ "share_url": format!("/share/{token}"), "expires_in_secs": 86_400 })).into_response()
+    }
+}
+
+async fn download_shared(
+    State(state): State<Arc<ServerState>>,
+    Path(token): Path<String>,
+) -> impl IntoResponse {
+    let now = unix_now();
+    let entry = {
+        let mut shares = state.shares.lock().await;
+        shares.retain(|_, e| e.expires_at > now);
+        shares.get(&token).map(|e| (e.team.clone(), e.name.clone()))
+    };
+    match entry {
+        None => (StatusCode::NOT_FOUND, "share link expired or not found\n").into_response(),
+        Some((team, name)) => match fs::read(state.storage.join(&team).join(&name)).await {
+            Ok(data) => (
+                StatusCode::OK,
+                [(
+                    "content-disposition",
+                    format!("attachment; filename=\"{name}\""),
+                )],
+                data,
+            )
+                .into_response(),
+            Err(_) => (StatusCode::NOT_FOUND, "snapshot not found\n").into_response(),
+        },
+    }
+}
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
+
+fn ui_page(title: &str, body: &str) -> String {
+    format!(
+        "<!DOCTYPE html><html><head><meta charset=utf-8><title>{title}</title>\
+         <style>body{{font-family:monospace;max-width:900px;margin:32px auto;padding:0 16px}}\
+         table{{border-collapse:collapse}}a{{color:#06c}}</style></head>\
+         <body><h1>rewind</h1>{body}</body></html>"
+    )
+}
+
+fn resolve_team_ui(state: &ServerState, headers: &HeaderMap, query_token: &str) -> Option<String> {
+    if !query_token.is_empty() {
+        let mut h = headers.clone();
+        if let Ok(v) = format!("Bearer {query_token}").parse() {
+            h.insert(axum::http::header::AUTHORIZATION, v);
+        }
+        resolve_team(state, &h)
+    } else {
+        resolve_team(state, headers)
+    }
+}
+
+fn random_token() -> String {
+    use std::io::Read;
+    let mut buf = [0u8; 16];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let _ = f.read_exact(&mut buf);
+    }
+    buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 // ── Agent-side push client ────────────────────────────────────────────────────
 
 pub async fn push_agent(args: PushAgentArgs) -> Result<()> {
@@ -441,6 +699,7 @@ mod tests {
             storage: PathBuf::from("/tmp"),
             token: token.map(|s| s.to_string()),
             registry: Arc::new(registry),
+            shares: Arc::new(TokioMutex::new(HashMap::new())),
         }
     }
 
