@@ -35,6 +35,7 @@ fn make_snapshot(n: usize) -> Snapshot {
                     "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_string(),
                 ),
                 body: None,
+                headers: Vec::new(),
             })),
             1 => s.events.push(Event::Db(DbRecord {
                 timestamp_ns: ts,
@@ -66,7 +67,7 @@ fn bench_write(c: &mut Criterion) {
             criterion::BenchmarkId::new("write", n),
             &snapshot,
             |b, s| {
-                b.iter(|| s.write(black_box(&path)).unwrap());
+                b.iter(|| s.write(black_box(&path), None).unwrap());
             },
         );
     }
@@ -79,10 +80,10 @@ fn bench_read(c: &mut Criterion) {
 
     for &n in &[100, 1_000, 10_000] {
         let snapshot = make_snapshot(n);
-        snapshot.write(&path).unwrap();
+        snapshot.write(&path, None).unwrap();
         group.throughput(Throughput::Elements(n as u64));
         group.bench_with_input(criterion::BenchmarkId::new("read", n), &n, |b, _| {
-            b.iter(|| black_box(Snapshot::read(&path)).unwrap());
+            b.iter(|| black_box(Snapshot::read(&path, None)).unwrap());
         });
     }
     group.finish();
