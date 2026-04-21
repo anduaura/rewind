@@ -1,0 +1,70 @@
+name: Setup rewind
+description: Install the rewind incident-replay CLI from a GitHub release binary.
+
+inputs:
+  version:
+    description: >
+      Release tag to install (e.g. v0.1.0).
+      Omit to install the latest published release.
+    required: false
+    default: ''
+  token:
+    description: GitHub token used to call the releases API.
+    required: false
+    default: ${{ github.token }}
+  install-dir:
+    description: Directory to place the rewind binary.
+    required: false
+    default: /usr/local/bin
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve version
+      id: meta
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        if [ -n "$INPUT_VERSION" ]; then
+          TAG="$INPUT_VERSION"
+        else
+          TAG=$(curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/latest" \
+            | jq -r '.tag_name')
+        fi
+        ARCH=$(uname -m)
+        case "$ARCH" in
+          x86_64)  SUFFIX="linux-x86_64" ;;
+          aarch64) SUFFIX="linux-arm64"  ;;
+          *)
+            echo "::error::rewind-setup: unsupported architecture '$ARCH'"
+            exit 1
+            ;;
+        esac
+        echo "tag=$TAG"      >> "$GITHUB_OUTPUT"
+        echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
+
+    - name: Download and install binary
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        TAG: ${{ steps.meta.outputs.tag }}
+        SUFFIX: ${{ steps.meta.outputs.suffix }}
+        INSTALL_DIR: ${{ inputs.install-dir }}
+      run: |
+        URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/rewind-${SUFFIX}"
+        echo "Installing rewind ${TAG} (${SUFFIX})"
+        curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$URL" \
+          -o "${INSTALL_DIR}/rewind"
+        chmod +x "${INSTALL_DIR}/rewind"
+
+    - name: Verify installation
+      shell: bash
+      env:
+        INSTALL_DIR: ${{ inputs.install-dir }}
+      run: |
+        "${INSTALL_DIR}/rewind" --help > /dev/null
+        echo "rewind ${{ steps.meta.outputs.tag }} installed at ${INSTALL_DIR}/rewind"

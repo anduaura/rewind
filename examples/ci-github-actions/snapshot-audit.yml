@@ -1,0 +1,79 @@
+# Nightly snapshot integrity audit — verifies that every .rwd file committed
+# to the snapshots/ directory still matches its .sha256 manifest.
+#
+# Triggers:
+#   - Nightly at 03:00 UTC (catches out-of-band modifications to stored snapshots)
+#   - On any PR that touches snapshots/ (catches accidental or malicious edits)
+#   - Manually via workflow_dispatch
+#
+# Any tampered or missing manifest causes the job to fail and surfaces an
+# annotation on the offending file.  Suitable for SOC 2 / compliance pipelines
+# that require evidence of data-at-rest integrity checks.
+
+name: Snapshot Integrity Audit
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  pull_request:
+    paths:
+      - 'snapshots/**'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    name: Verify all snapshot manifests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Install rewind
+        uses: ./.github/actions/rewind-setup
+
+      - name: Check for snapshots
+        id: check
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(snapshots/*.rwd)
+          echo "count=${#files[@]}" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if no snapshots
+        if: steps.check.outputs.count == '0'
+        run: echo "No .rwd files in snapshots/ — nothing to verify."
+
+      - name: Verify all manifests
+        if: steps.check.outputs.count != '0'
+        shell: bash
+        run: |
+          shopt -s nullglob
+          failed=0
+          for f in snapshots/*.rwd; do
+            # rewind verify exits 0=ok, 1=tampered, 2=no manifest
+            if ! rewind verify "$f" --json | tee /dev/stderr \
+                 | jq -e '.status == "ok"' > /dev/null 2>&1; then
+              status=$(rewind verify "$f" --json 2>/dev/null | jq -r '.status' || echo "error")
+              echo "::error file=$f::Integrity check failed (status=$status): $f"
+              failed=$((failed + 1))
+            fi
+          done
+          if [ "$failed" -gt 0 ]; then
+            echo "::error::$failed snapshot(s) failed integrity verification"
+            exit 1
+          fi
+          echo "All snapshots verified successfully."
+
+      - name: Write manifests for new snapshots
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          # Run manually to bootstrap manifests for newly-added snapshots.
+          shopt -s nullglob
+          for f in snapshots/*.rwd; do
+            [ -f "${f}.sha256" ] && continue
+            echo "Writing manifest for $f"
+            rewind verify "$f" --write
+          done

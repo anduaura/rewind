@@ -1,0 +1,53 @@
+# Replay regression test — replays the golden snapshot against the current
+# codebase on every pull request and push to main.
+#
+# Setup:
+#   1. Record a known-good snapshot:   rewind record --output snapshots/golden.rwd
+#   2. Write its manifest:             rewind verify snapshots/golden.rwd --write
+#   3. Commit both files:              git add snapshots/golden.rwd snapshots/golden.rwd.sha256
+#
+# The workflow verifies the snapshot hasn't been tampered with, then replays
+# it against the freshly-built services to detect regressions.
+
+name: Replay Regression Test
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  replay:
+    name: Replay golden snapshot
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true  # snapshots may be stored in Git LFS
+
+      - name: Install rewind
+        uses: ./.github/actions/rewind-setup
+
+      # Abort immediately if the snapshot file has been tampered with.
+      - name: Verify snapshot integrity
+        run: rewind verify snapshots/golden.rwd
+
+      # Build / pull service images before bringing the stack up.
+      - name: Build services
+        run: docker compose build
+
+      - name: Start services
+        run: docker compose up -d --wait
+        timeout-minutes: 3
+
+      # Replay exits 0 on clean match; non-zero on divergence.
+      - name: Replay
+        run: rewind replay snapshots/golden.rwd --compose docker-compose.yml
+        env:
+          REWIND_SNAPSHOT_KEY: ${{ secrets.REWIND_SNAPSHOT_KEY }}
+
+      - name: Tear down
+        if: always()
+        run: docker compose down --volumes

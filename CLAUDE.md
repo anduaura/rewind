@@ -121,6 +121,7 @@ Three crates in the repo:
 | 42 | TLS for collection server (`--tls-cert`/`--tls-key` on `rewind server`) | Done |
 | 43 | Snapshot integrity verification (`rewind verify`) — SHA-256 manifest + tamper detection | Done |
 | 44 | Rate limiting + upload size cap — per-IP sliding-window limiter + `DefaultBodyLimit` on `rewind server` | Done |
+| 45 | CI/CD integration — `rewind-setup` composite action + regression-test and snapshot-audit workflow examples | Done |
 
 ## Enterprise readiness goal
 
