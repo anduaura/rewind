@@ -326,9 +326,7 @@ fn print_report(report: &DiffReport) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::snapshot::{
-        DbRecord, Event, GrpcRecord, HttpRecord, Snapshot, SyscallRecord,
-    };
+    use crate::store::snapshot::{DbRecord, Event, HttpRecord, Snapshot, SyscallRecord};
 
     fn make_snapshot(events: Vec<Event>) -> Snapshot {
         let mut s = Snapshot::new(vec!["api".to_string()]);

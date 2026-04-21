@@ -147,6 +147,54 @@ impl Snapshot {
     }
 }
 
+pub async fn inspect(args: InspectArgs) -> Result<()> {
+    let snapshot = Snapshot::read(
+        &args.snapshot,
+        crate::crypto::resolve_key(args.key).as_deref(),
+    )?;
+
+    let _ = crate::audit::log(&crate::audit::AuditEvent::Inspect {
+        snapshot: &args.snapshot.to_string_lossy(),
+        event_count: snapshot.events.len(),
+    });
+
+    let http_count = snapshot
+        .events
+        .iter()
+        .filter(|e| matches!(e, Event::Http(_)))
+        .count();
+    let db_count = snapshot
+        .events
+        .iter()
+        .filter(|e| matches!(e, Event::Db(_)))
+        .count();
+    let sys_count = snapshot
+        .events
+        .iter()
+        .filter(|e| matches!(e, Event::Syscall(_)))
+        .count();
+    let grpc_count = snapshot
+        .events
+        .iter()
+        .filter(|e| matches!(e, Event::Grpc(_)))
+        .count();
+
+    println!("rewind snapshot v{}", snapshot.version);
+    println!("recorded:  {} ns since epoch", snapshot.recorded_at_ns);
+    println!("services:  {}", snapshot.services.join(", "));
+    println!(
+        "events:    {}  (http={http_count} grpc={grpc_count} db={db_count} syscall={sys_count})",
+        snapshot.events.len()
+    );
+    println!();
+
+    for event in &snapshot.events {
+        println!("{}", event);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,52 +314,4 @@ mod tests {
         assert_eq!(s.version, 1);
         assert_eq!(s.events.len(), 0);
     }
-}
-
-pub async fn inspect(args: InspectArgs) -> Result<()> {
-    let snapshot = Snapshot::read(
-        &args.snapshot,
-        crate::crypto::resolve_key(args.key).as_deref(),
-    )?;
-
-    let _ = crate::audit::log(&crate::audit::AuditEvent::Inspect {
-        snapshot: &args.snapshot.to_string_lossy(),
-        event_count: snapshot.events.len(),
-    });
-
-    let http_count = snapshot
-        .events
-        .iter()
-        .filter(|e| matches!(e, Event::Http(_)))
-        .count();
-    let db_count = snapshot
-        .events
-        .iter()
-        .filter(|e| matches!(e, Event::Db(_)))
-        .count();
-    let sys_count = snapshot
-        .events
-        .iter()
-        .filter(|e| matches!(e, Event::Syscall(_)))
-        .count();
-    let grpc_count = snapshot
-        .events
-        .iter()
-        .filter(|e| matches!(e, Event::Grpc(_)))
-        .count();
-
-    println!("rewind snapshot v{}", snapshot.version);
-    println!("recorded:  {} ns since epoch", snapshot.recorded_at_ns);
-    println!("services:  {}", snapshot.services.join(", "));
-    println!(
-        "events:    {}  (http={http_count} grpc={grpc_count} db={db_count} syscall={sys_count})",
-        snapshot.events.len()
-    );
-    println!();
-
-    for event in &snapshot.events {
-        println!("{}", event);
-    }
-
-    Ok(())
 }
