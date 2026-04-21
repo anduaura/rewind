@@ -26,6 +26,7 @@ pub mod report;
 pub mod retention;
 pub mod timeline;
 pub mod scrub;
+pub mod search;
 pub mod server;
 pub mod store;
 pub mod verify;

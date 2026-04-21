@@ -69,6 +69,8 @@ pub enum Command {
     Timeline(TimelineArgs),
     /// Send a Slack / webhook notification with a snapshot summary after a flush
     Notify(NotifyArgs),
+    /// Search a directory of .rwd snapshots for events matching given criteria
+    Search(SearchArgs),
 }
 
 #[derive(Args)]
@@ -394,6 +396,44 @@ pub struct NotifyArgs {
     /// Print the JSON payload to stdout without sending it (useful for debugging)
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Decryption passphrase for encrypted snapshots (overrides REWIND_SNAPSHOT_KEY)
+    #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
+    pub key: Option<String>,
+}
+
+#[derive(Args)]
+pub struct SearchArgs {
+    /// Directory containing .rwd snapshot files to search
+    pub dir: PathBuf,
+
+    /// Filter: HTTP/gRPC path must contain this string (case-insensitive)
+    #[arg(long)]
+    pub path: Option<String>,
+
+    /// Filter: HTTP status code must equal this value (e.g. 500)
+    #[arg(long)]
+    pub status: Option<u16>,
+
+    /// Filter: HTTP method must match (case-insensitive, e.g. POST)
+    #[arg(long)]
+    pub method: Option<String>,
+
+    /// Filter: DB query must contain this string (case-insensitive)
+    #[arg(long)]
+    pub query: Option<String>,
+
+    /// Filter: snapshot must involve this service name (case-insensitive substring)
+    #[arg(long)]
+    pub service: Option<String>,
+
+    /// Filter: DB protocol must match (e.g. postgres, redis, mysql)
+    #[arg(long)]
+    pub protocol: Option<String>,
+
+    /// Output results as JSON
+    #[arg(long)]
+    pub json: bool,
 
     /// Decryption passphrase for encrypted snapshots (overrides REWIND_SNAPSHOT_KEY)
     #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
