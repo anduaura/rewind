@@ -81,7 +81,7 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
     let mock_server = MockServer::new(outbound_responses);
     tokio::spawn(async move {
         if let Err(e) = mock_server.serve(listener).await {
-            eprintln!("MockServer error: {e}");
+            tracing::error!("MockServer error: {e}");
         }
     });
 

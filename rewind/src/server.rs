@@ -99,7 +99,7 @@ async fn serve_tls(
             let tls = match acceptor.accept(tcp).await {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("[server] TLS handshake failed from {peer}: {e}");
+                    tracing::warn!("TLS handshake failed from {peer}: {e}");
                     return;
                 }
             };
@@ -117,7 +117,7 @@ async fn serve_tls(
                 .serve_connection_with_upgrades(io, svc)
                 .await
             {
-                eprintln!("[server] connection error: {e}");
+                tracing::error!("connection error: {e}");
             }
         });
     }
@@ -345,11 +345,7 @@ async fn upload_snapshot(
         destination: "server",
     });
 
-    eprintln!(
-        "[server] [{team}] received {} ({} bytes)",
-        filename,
-        body.len()
-    );
+    tracing::info!(team, filename, bytes = body.len(), "snapshot received");
     (StatusCode::CREATED, format!("{team}/{filename}\n")).into_response()
 }
 

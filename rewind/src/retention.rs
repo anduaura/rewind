@@ -176,9 +176,9 @@ fn maybe_delete(
     if delete {
         std::fs::remove_file(path)
             .with_context(|| format!("failed to delete {}", path.display()))?;
-        eprintln!("deleted {}", path.display());
+        tracing::info!(path = %path.display(), "deleted snapshot");
     } else {
-        eprintln!("would delete {} ({} bytes)", path.display(), size);
+        tracing::info!(path = %path.display(), bytes = size, "would delete snapshot (dry-run)");
     }
     *deleted += 1;
     *bytes_freed += size;

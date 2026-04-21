@@ -21,6 +21,14 @@ use std::path::PathBuf;
     about = "Deterministic replay of distributed system incidents"
 )]
 pub struct Cli {
+    /// Log format: `text` (human-readable, default) or `json` (structured, for log aggregators)
+    #[arg(long, global = true, env = "REWIND_LOG_FORMAT", default_value = "text")]
+    pub log_format: String,
+
+    /// Log level filter (e.g. `info`, `debug`, `warn`). Overridden by RUST_LOG env var.
+    #[arg(long, global = true, env = "REWIND_LOG", default_value = "info")]
+    pub log_level: String,
+
     #[command(subcommand)]
     pub command: Command,
 }

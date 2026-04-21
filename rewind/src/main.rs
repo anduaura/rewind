@@ -15,10 +15,25 @@
 use anyhow::Result;
 use clap::Parser;
 use rewind::cli::{Cli, Command};
+use tracing_subscriber::{fmt, EnvFilter};
+
+fn init_logging(format: &str, default_level: &str) {
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
+    match format {
+        "json" => fmt()
+            .json()
+            .with_env_filter(filter)
+            .with_target(true)
+            .init(),
+        _ => fmt().with_env_filter(filter).with_target(false).init(),
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    init_logging(&cli.log_format, &cli.log_level);
 
     match cli.command {
         Command::Attach(args) => rewind::capture::agent::attach(args).await,

@@ -100,21 +100,24 @@ async fn handle_webhook(
     let filename = format!("incident-{ts}.rwd");
     let output = state.output_dir.join(&filename);
 
-    eprintln!(
-        "[webhook] alert from {alert_source} → flushing to {}",
-        output.display()
-    );
+    tracing::info!(source = alert_source, output = %output.display(), "alert received, flushing");
 
     match trigger_flush(&state.window, &output).await {
         Ok(count) => {
-            let msg = format!("flushed {count} events to {filename}\n");
-            eprintln!("[webhook] {}", msg.trim());
-            (StatusCode::OK, msg).into_response()
+            tracing::info!(events = count, filename, "flush complete");
+            (
+                StatusCode::OK,
+                format!("flushed {count} events to {filename}\n"),
+            )
+                .into_response()
         }
         Err(e) => {
-            let msg = format!("flush failed: {e}\n");
-            eprintln!("[webhook] {}", msg.trim());
-            (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
+            tracing::error!("flush failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("flush failed: {e}\n"),
+            )
+                .into_response()
         }
     }
 }

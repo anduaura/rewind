@@ -54,11 +54,7 @@ pub async fn run(args: ExportArgs) -> Result<()> {
     match &args.output {
         Some(path) => {
             std::fs::write(path, &out)?;
-            eprintln!(
-                "Exported {count} spans ({}) to {}",
-                args.format,
-                path.display()
-            );
+            tracing::info!(count, format = args.format, path = %path.display(), "export complete");
         }
         None => println!("{}", out),
     }

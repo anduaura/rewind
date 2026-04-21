@@ -85,7 +85,7 @@ pub async fn run(args: RecordArgs) -> Result<()> {
     }
 
     if let Err(e) = crate::metrics::serve(METRICS_ADDR, Arc::clone(&metrics)).await {
-        eprintln!("warn: metrics server failed to start on {METRICS_ADDR}: {e}");
+        tracing::warn!("metrics server failed to start on {METRICS_ADDR}: {e}");
     } else {
         println!("  metrics:  http://{METRICS_ADDR}/metrics");
     }
@@ -95,7 +95,7 @@ pub async fn run(args: RecordArgs) -> Result<()> {
         .context("failed to load eBPF object — did you run `make build-ebpf`?")?;
 
     if let Err(e) = EbpfLogger::init(&mut bpf) {
-        eprintln!("warn: eBPF logger not available: {e}");
+        tracing::warn!("eBPF logger not available: {e}");
     }
 
     attach_probes(&mut bpf)?;
@@ -1178,7 +1178,7 @@ async fn run_socket_listener(
     let listener = match UnixListener::bind(SOCKET_PATH) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("warn: could not bind Unix socket {SOCKET_PATH}: {e}");
+            tracing::warn!("could not bind Unix socket {SOCKET_PATH}: {e}");
             return;
         }
     };

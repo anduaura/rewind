@@ -105,7 +105,7 @@ async fn handle_request(State(state): State<MockState>, req: Request) -> Respons
             let msg = format!(
                 r#"{{"error":"no recorded response","method":"{method}","path":"{path}"}}"#
             );
-            eprintln!("  MockServer [502] {method} {path} — no recorded response");
+            tracing::warn!(method, path, "MockServer 502: no recorded response");
             Response::builder()
                 .status(502)
                 .header("content-type", "application/json")

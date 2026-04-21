@@ -122,6 +122,7 @@ Three crates in the repo:
 | 43 | Snapshot integrity verification (`rewind verify`) — SHA-256 manifest + tamper detection | Done |
 | 44 | Rate limiting + upload size cap — per-IP sliding-window limiter + `DefaultBodyLimit` on `rewind server` | Done |
 | 45 | CI/CD integration — `rewind-setup` composite action + regression-test and snapshot-audit workflow examples | Done |
+| 46 | Structured logging — `tracing` + `tracing-subscriber`; `--log-format json` for log aggregators; `RUST_LOG` / `REWIND_LOG` level control | Done |
 
 ## Enterprise readiness goal
 
