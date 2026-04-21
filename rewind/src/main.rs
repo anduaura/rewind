@@ -51,5 +51,6 @@ async fn main() -> Result<()> {
         Command::Scrub(args) => rewind::scrub::run(args).await,
         Command::Verify(args) => rewind::verify::run(args).await,
         Command::Report(args) => rewind::report::run(args).await,
+        Command::Timeline(args) => rewind::timeline::run(args).await,
     }
 }

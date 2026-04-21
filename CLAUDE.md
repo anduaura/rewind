@@ -71,7 +71,8 @@ Three crates in the repo:
 | `examples/docker-compose-demo` | Done | api + worker Flask services with Postgres + Redis; `make demo` wires everything |
 | `Makefile` | Done | build-ebpf → build-userspace → bench → demo targets |
 | `src/report.rs` | Done | `rewind report` — Markdown + HTML incident report; HTTP timeline, DB queries, gRPC calls, error summary, syscall counts |
-| `tests/` (unit) | Done | 134 unit tests: all DB/HTTP/Redis/gRPC parsers, ring buffer, snapshot roundtrip, server RBAC + rate limiting, report generation; `cargo test` |
+| `src/timeline.rs` | Done | `rewind timeline` — Mermaid + ASCII sequence diagram of inter-service request flow; paste into GitHub/Notion/Miro |
+| `tests/` (unit) | Done | 148 unit tests: all DB/HTTP/Redis/gRPC parsers, ring buffer, snapshot roundtrip, server RBAC + rate limiting, report + timeline generation; `cargo test` |
 | `.github/workflows/` | Done | CI (check + test + clippy + fmt on every PR); Release (musl binary + sha256 on tag push) |
 | `helm/rewind/` | Done | Helm chart (DaemonSet + RBAC + ConfigMap); `helm install rewind helm/rewind` |
 | `Dockerfile` | Done | Multi-stage musl build → distroless runtime image; pushed to ghcr.io on tag |
@@ -125,6 +126,7 @@ Three crates in the repo:
 | 45 | CI/CD integration — `rewind-setup` composite action + regression-test and snapshot-audit workflow examples | Done |
 | 46 | Structured logging — `tracing` + `tracing-subscriber`; `--log-format json` for log aggregators; `RUST_LOG` / `REWIND_LOG` level control | Done |
 | 47 | Incident report generation — `rewind report` produces a Markdown or HTML post-mortem document from a snapshot; HTTP timeline, DB queries, gRPC calls, error summary | Done |
+| 48 | Sequence diagram — `rewind timeline` renders the inter-service request flow as a Mermaid or ASCII sequence diagram; paste into GitHub/Notion/Miro for post-mortems | Done |
 
 ## Enterprise readiness goal
 

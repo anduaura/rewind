@@ -23,6 +23,7 @@ pub mod push;
 pub mod replay;
 pub mod report;
 pub mod retention;
+pub mod timeline;
 pub mod scrub;
 pub mod server;
 pub mod store;

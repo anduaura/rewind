@@ -65,6 +65,8 @@ pub enum Command {
     Verify(VerifyArgs),
     /// Generate a human-readable incident report (Markdown or HTML) from a snapshot
     Report(ReportArgs),
+    /// Render a Mermaid or ASCII sequence diagram of the inter-service request flow
+    Timeline(TimelineArgs),
 }
 
 #[derive(Args)]
@@ -340,6 +342,24 @@ pub struct ReportArgs {
     pub format: String,
 
     /// Write report to file instead of stdout
+    #[arg(long, short)]
+    pub output: Option<PathBuf>,
+
+    /// Decryption passphrase for encrypted snapshots (overrides REWIND_SNAPSHOT_KEY)
+    #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
+    pub key: Option<String>,
+}
+
+#[derive(Args)]
+pub struct TimelineArgs {
+    /// Path to the .rwd snapshot file
+    pub snapshot: PathBuf,
+
+    /// Output format: `mermaid` (default, paste into any Markdown renderer) or `ascii`
+    #[arg(long, default_value = "mermaid")]
+    pub format: String,
+
+    /// Write diagram to file instead of stdout
     #[arg(long, short)]
     pub output: Option<PathBuf>,
 
