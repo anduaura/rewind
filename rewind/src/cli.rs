@@ -63,6 +63,8 @@ pub enum Command {
     Scrub(ScrubArgs),
     /// Verify snapshot integrity against its SHA-256 manifest
     Verify(VerifyArgs),
+    /// Generate a human-readable incident report (Markdown or HTML) from a snapshot
+    Report(ReportArgs),
 }
 
 #[derive(Args)]
@@ -324,6 +326,24 @@ pub struct ScrubArgs {
     pub json: bool,
 
     /// Decryption passphrase (also used to re-encrypt output; overrides REWIND_SNAPSHOT_KEY)
+    #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
+    pub key: Option<String>,
+}
+
+#[derive(Args)]
+pub struct ReportArgs {
+    /// Path to the .rwd snapshot file
+    pub snapshot: PathBuf,
+
+    /// Output format: `md` (Markdown, default) or `html`
+    #[arg(long, default_value = "md")]
+    pub format: String,
+
+    /// Write report to file instead of stdout
+    #[arg(long, short)]
+    pub output: Option<PathBuf>,
+
+    /// Decryption passphrase for encrypted snapshots (overrides REWIND_SNAPSHOT_KEY)
     #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
     pub key: Option<String>,
 }

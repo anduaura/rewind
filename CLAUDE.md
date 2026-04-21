@@ -70,7 +70,8 @@ Three crates in the repo:
 | `benches/` | Done | criterion benchmarks for ring buffer (push/drain) and snapshot I/O (read/write); `make bench` |
 | `examples/docker-compose-demo` | Done | api + worker Flask services with Postgres + Redis; `make demo` wires everything |
 | `Makefile` | Done | build-ebpf → build-userspace → bench → demo targets |
-| `tests/` (unit) | Done | 123 unit tests: all DB/HTTP/Redis/gRPC parsers, ring buffer, snapshot roundtrip, server RBAC + rate limiting; `cargo test` |
+| `src/report.rs` | Done | `rewind report` — Markdown + HTML incident report; HTTP timeline, DB queries, gRPC calls, error summary, syscall counts |
+| `tests/` (unit) | Done | 134 unit tests: all DB/HTTP/Redis/gRPC parsers, ring buffer, snapshot roundtrip, server RBAC + rate limiting, report generation; `cargo test` |
 | `.github/workflows/` | Done | CI (check + test + clippy + fmt on every PR); Release (musl binary + sha256 on tag push) |
 | `helm/rewind/` | Done | Helm chart (DaemonSet + RBAC + ConfigMap); `helm install rewind helm/rewind` |
 | `Dockerfile` | Done | Multi-stage musl build → distroless runtime image; pushed to ghcr.io on tag |
@@ -123,6 +124,7 @@ Three crates in the repo:
 | 44 | Rate limiting + upload size cap — per-IP sliding-window limiter + `DefaultBodyLimit` on `rewind server` | Done |
 | 45 | CI/CD integration — `rewind-setup` composite action + regression-test and snapshot-audit workflow examples | Done |
 | 46 | Structured logging — `tracing` + `tracing-subscriber`; `--log-format json` for log aggregators; `RUST_LOG` / `REWIND_LOG` level control | Done |
+| 47 | Incident report generation — `rewind report` produces a Markdown or HTML post-mortem document from a snapshot; HTTP timeline, DB queries, gRPC calls, error summary | Done |
 
 ## Enterprise readiness goal
 
