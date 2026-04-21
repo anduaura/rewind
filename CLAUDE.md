@@ -70,7 +70,7 @@ Three crates in the repo:
 | `benches/` | Done | criterion benchmarks for ring buffer (push/drain) and snapshot I/O (read/write); `make bench` |
 | `examples/docker-compose-demo` | Done | api + worker Flask services with Postgres + Redis; `make demo` wires everything |
 | `Makefile` | Done | build-ebpf → build-userspace → bench → demo targets |
-| `tests/` (unit) | Done | 48 unit tests: all DB/HTTP/Redis/gRPC parsers, ring buffer, snapshot roundtrip; `cargo test` |
+| `tests/` (unit) | Done | 123 unit tests: all DB/HTTP/Redis/gRPC parsers, ring buffer, snapshot roundtrip, server RBAC + rate limiting; `cargo test` |
 | `.github/workflows/` | Done | CI (check + test + clippy + fmt on every PR); Release (musl binary + sha256 on tag push) |
 | `helm/rewind/` | Done | Helm chart (DaemonSet + RBAC + ConfigMap); `helm install rewind helm/rewind` |
 | `Dockerfile` | Done | Multi-stage musl build → distroless runtime image; pushed to ghcr.io on tag |
@@ -120,6 +120,7 @@ Three crates in the repo:
 | 41 | Post-hoc PII scrub (`rewind scrub src.rwd dst.rwd`) — redact headers, strip bodies, filter paths on stored snapshots | Done |
 | 42 | TLS for collection server (`--tls-cert`/`--tls-key` on `rewind server`) | Done |
 | 43 | Snapshot integrity verification (`rewind verify`) — SHA-256 manifest + tamper detection | Done |
+| 44 | Rate limiting + upload size cap — per-IP sliding-window limiter + `DefaultBodyLimit` on `rewind server` | Done |
 
 ## Enterprise readiness goal
 

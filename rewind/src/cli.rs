@@ -222,6 +222,14 @@ pub struct ServerArgs {
     /// Path to TLS private key file (PEM)
     #[arg(long)]
     pub tls_key: Option<PathBuf>,
+
+    /// Maximum snapshot upload size in megabytes (0 = unlimited)
+    #[arg(long, default_value = "100")]
+    pub max_snapshot_mb: u64,
+
+    /// Max snapshot uploads per minute per source IP (0 = unlimited)
+    #[arg(long, default_value = "10")]
+    pub rate_limit: u32,
 }
 
 #[derive(Args)]

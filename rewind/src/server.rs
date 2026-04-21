@@ -30,16 +30,17 @@
 use anyhow::Result;
 use axum::{
     body::Bytes,
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Json},
     routing::{get, post},
     Router,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::fs;
 use tokio::sync::Mutex as TokioMutex;
 
@@ -151,6 +152,38 @@ struct ShareEntry {
     expires_at: u64,
 }
 
+/// Sliding-window rate limiter: tracks upload timestamps per client IP.
+struct RateLimiter {
+    max_per_min: u32,
+    window: Mutex<HashMap<String, VecDeque<Instant>>>,
+}
+
+impl RateLimiter {
+    fn new(max_per_min: u32) -> Self {
+        Self {
+            max_per_min,
+            window: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Returns `true` if the IP is within the rate limit; `false` if it should be rejected.
+    fn check(&self, ip: &str) -> bool {
+        if self.max_per_min == 0 {
+            return true;
+        }
+        let mut w = self.window.lock().unwrap();
+        let now = Instant::now();
+        let entry = w.entry(ip.to_string()).or_default();
+        entry.retain(|t| now.duration_since(*t).as_secs() < 60);
+        if entry.len() < self.max_per_min as usize {
+            entry.push_back(now);
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[derive(Clone)]
 struct ServerState {
     storage: PathBuf,
@@ -160,6 +193,10 @@ struct ServerState {
     registry: Arc<TokenRegistry>,
     /// In-memory share tokens → (team, name, expiry unix secs).
     shares: Arc<TokioMutex<HashMap<String, ShareEntry>>>,
+    /// Per-IP upload rate limiter.
+    rate_limiter: Arc<RateLimiter>,
+    /// Max allowed upload body in bytes (0 = unlimited).
+    max_body_bytes: usize,
 }
 
 pub async fn run(args: ServerArgs) -> Result<()> {
@@ -171,12 +208,22 @@ pub async fn run(args: ServerArgs) -> Result<()> {
         TokenRegistry::default()
     };
 
+    let max_body_bytes = (args.max_snapshot_mb as usize).saturating_mul(1024 * 1024);
+
     let state = Arc::new(ServerState {
         storage: args.storage.clone(),
         token: args.token.clone(),
         registry: Arc::new(registry),
         shares: Arc::new(TokioMutex::new(HashMap::new())),
+        rate_limiter: Arc::new(RateLimiter::new(args.rate_limit)),
+        max_body_bytes,
     });
+
+    let body_limit = if args.max_snapshot_mb > 0 {
+        DefaultBodyLimit::max(max_body_bytes)
+    } else {
+        DefaultBodyLimit::disable()
+    };
 
     let app = Router::new()
         .route("/healthz", get(healthz))
@@ -187,6 +234,7 @@ pub async fn run(args: ServerArgs) -> Result<()> {
         .route("/ui", get(ui_dashboard))
         .route("/ui/{name}", get(ui_snapshot_detail))
         .route("/share/{token}", get(download_shared))
+        .layer(body_limit)
         .with_state(state.clone());
 
     println!("rewind server");
@@ -199,6 +247,12 @@ pub async fn run(args: ServerArgs) -> Result<()> {
         );
     } else if args.token.is_some() {
         println!("  auth:    Authorization: Bearer <token> required");
+    }
+    if args.max_snapshot_mb > 0 {
+        println!("  limit:   {} MB max upload size", args.max_snapshot_mb);
+    }
+    if args.rate_limit > 0 {
+        println!("  rate:    {} uploads/min per IP", args.rate_limit);
     }
     println!("  POST /snapshots        — upload");
     println!("  GET  /snapshots        — list");
@@ -242,8 +296,17 @@ async fn upload_snapshot(
         None => return (StatusCode::UNAUTHORIZED, "missing or invalid token\n").into_response(),
     };
 
+    let client_ip = extract_client_ip(&headers);
+    if !state.rate_limiter.check(&client_ip) {
+        return (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded\n").into_response();
+    }
+
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, "empty body\n").into_response();
+    }
+
+    if state.max_body_bytes > 0 && body.len() > state.max_body_bytes {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "snapshot exceeds size limit\n").into_response();
     }
 
     // Name: X-Rewind-Snapshot header, else timestamp-based.
@@ -368,6 +431,16 @@ fn resolve_team(state: &ServerState, headers: &HeaderMap) -> Option<String> {
         // Open server (no auth configured).
         Some("default".to_string())
     }
+}
+
+fn extract_client_ip(headers: &HeaderMap) -> String {
+    headers
+        .get("x-forwarded-for")
+        .or_else(|| headers.get("x-real-ip"))
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn is_safe_filename(name: &str) -> bool {
@@ -700,6 +773,8 @@ mod tests {
             token: token.map(|s| s.to_string()),
             registry: Arc::new(registry),
             shares: Arc::new(TokioMutex::new(HashMap::new())),
+            rate_limiter: Arc::new(RateLimiter::new(10)),
+            max_body_bytes: 100 * 1024 * 1024,
         }
     }
 
@@ -748,5 +823,49 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert("authorization", "Bearer tok-unknown".parse().unwrap());
         assert!(resolve_team(&state, &h).is_none());
+    }
+
+    #[test]
+    fn rate_limiter_allows_up_to_limit() {
+        let rl = RateLimiter::new(3);
+        assert!(rl.check("10.0.0.1"));
+        assert!(rl.check("10.0.0.1"));
+        assert!(rl.check("10.0.0.1"));
+        assert!(!rl.check("10.0.0.1")); // 4th exceeds limit
+    }
+
+    #[test]
+    fn rate_limiter_unlimited_when_zero() {
+        let rl = RateLimiter::new(0);
+        for _ in 0..1000 {
+            assert!(rl.check("10.0.0.1"));
+        }
+    }
+
+    #[test]
+    fn rate_limiter_separate_ips_independent() {
+        let rl = RateLimiter::new(1);
+        assert!(rl.check("1.1.1.1"));
+        assert!(!rl.check("1.1.1.1")); // exhausted
+        assert!(rl.check("2.2.2.2")); // different IP still allowed
+    }
+
+    #[test]
+    fn extract_client_ip_uses_forwarded_for() {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", "203.0.113.5, 10.0.0.1".parse().unwrap());
+        assert_eq!(extract_client_ip(&h), "203.0.113.5");
+    }
+
+    #[test]
+    fn extract_client_ip_falls_back_to_real_ip() {
+        let mut h = HeaderMap::new();
+        h.insert("x-real-ip", "203.0.113.99".parse().unwrap());
+        assert_eq!(extract_client_ip(&h), "203.0.113.99");
+    }
+
+    #[test]
+    fn extract_client_ip_unknown_when_no_header() {
+        assert_eq!(extract_client_ip(&HeaderMap::new()), "unknown");
     }
 }
