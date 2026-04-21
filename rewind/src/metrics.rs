@@ -74,11 +74,7 @@ impl Metrics {
         let flushed = self.snapshots_flushed.load(Ordering::Relaxed);
         let cap = self.ring_buffer_capacity.load(Ordering::Relaxed);
         let size = self.ring_buffer_size.load(Ordering::Relaxed);
-        let util = if cap > 0 {
-            (size * 1000 / cap) as f64 / 1000.0
-        } else {
-            0.0
-        };
+        let util = (size * 1000).checked_div(cap).unwrap_or(0) as f64 / 1000.0;
 
         format!(
             "# HELP rewind_events_captured_total Total events captured by type\n\
