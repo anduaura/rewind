@@ -52,5 +52,6 @@ async fn main() -> Result<()> {
         Command::Verify(args) => rewind::verify::run(args).await,
         Command::Report(args) => rewind::report::run(args).await,
         Command::Timeline(args) => rewind::timeline::run(args).await,
+        Command::Notify(args) => rewind::notify::run(args).await,
     }
 }

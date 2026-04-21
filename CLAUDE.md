@@ -72,7 +72,8 @@ Three crates in the repo:
 | `Makefile` | Done | build-ebpf → build-userspace → bench → demo targets |
 | `src/report.rs` | Done | `rewind report` — Markdown + HTML incident report; HTTP timeline, DB queries, gRPC calls, error summary, syscall counts |
 | `src/timeline.rs` | Done | `rewind timeline` — Mermaid + ASCII sequence diagram of inter-service request flow; paste into GitHub/Notion/Miro |
-| `tests/` (unit) | Done | 148 unit tests: all DB/HTTP/Redis/gRPC parsers, ring buffer, snapshot roundtrip, server RBAC + rate limiting, report + timeline generation; `cargo test` |
+| `src/notify.rs` | Done | `rewind notify` — Slack Block Kit + generic webhook notification; event counts, services, timeline preview; `--dry-run` for inspection |
+| `tests/` (unit) | Done | 156 unit tests: all DB/HTTP/Redis/gRPC parsers, ring buffer, snapshot roundtrip, server RBAC + rate limiting, report + timeline + notify; `cargo test` |
 | `.github/workflows/` | Done | CI (check + test + clippy + fmt on every PR); Release (musl binary + sha256 on tag push) |
 | `helm/rewind/` | Done | Helm chart (DaemonSet + RBAC + ConfigMap); `helm install rewind helm/rewind` |
 | `Dockerfile` | Done | Multi-stage musl build → distroless runtime image; pushed to ghcr.io on tag |
@@ -127,6 +128,7 @@ Three crates in the repo:
 | 46 | Structured logging — `tracing` + `tracing-subscriber`; `--log-format json` for log aggregators; `RUST_LOG` / `REWIND_LOG` level control | Done |
 | 47 | Incident report generation — `rewind report` produces a Markdown or HTML post-mortem document from a snapshot; HTTP timeline, DB queries, gRPC calls, error summary | Done |
 | 48 | Sequence diagram — `rewind timeline` renders the inter-service request flow as a Mermaid or ASCII sequence diagram; paste into GitHub/Notion/Miro for post-mortems | Done |
+| 49 | Slack / webhook notification — `rewind notify` sends a Block Kit summary (event counts, services, timeline preview) to any Slack Incoming Webhook or generic HTTP endpoint | Done |
 
 ## Enterprise readiness goal
 

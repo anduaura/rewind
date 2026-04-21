@@ -21,6 +21,7 @@ pub mod export;
 pub mod metrics;
 pub mod push;
 pub mod replay;
+pub mod notify;
 pub mod report;
 pub mod retention;
 pub mod timeline;
