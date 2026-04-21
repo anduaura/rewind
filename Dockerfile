@@ -20,6 +20,11 @@ RUN case "$TARGETARCH" in \
 
 RUN rustup target add "$(cat /rust-target)"
 
+# Configure musl linker so the cc crate (used by ring, etc.) can find it.
+RUN mkdir -p /root/.cargo && printf \
+    '[target.x86_64-unknown-linux-musl]\nlinker = "musl-gcc"\n\n[target.aarch64-unknown-linux-musl]\nlinker = "musl-gcc"\n' \
+    > /root/.cargo/config.toml
+
 WORKDIR /build
 
 # Cache dependencies before copying source
@@ -36,7 +41,7 @@ RUN mkdir -p rewind-common/src rewind/src && \
 # Fetch + compile dependencies (cached layer)
 RUN RUST_TARGET=$(cat /rust-target) && \
     cargo build --release --manifest-path rewind/Cargo.toml \
-    --target "$RUST_TARGET" 2>/dev/null || true
+    --target "$RUST_TARGET" || true
 
 # Now copy real source and build
 COPY rewind-common rewind-common

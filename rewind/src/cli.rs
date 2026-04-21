@@ -63,6 +63,12 @@ pub enum Command {
     Scrub(ScrubArgs),
     /// Verify snapshot integrity against its SHA-256 manifest
     Verify(VerifyArgs),
+    /// Generate a human-readable incident report (Markdown or HTML) from a snapshot
+    Report(ReportArgs),
+    /// Render a Mermaid or ASCII sequence diagram of the inter-service request flow
+    Timeline(TimelineArgs),
+    /// Send a Slack / webhook notification with a snapshot summary after a flush
+    Notify(NotifyArgs),
 }
 
 #[derive(Args)]
@@ -324,6 +330,72 @@ pub struct ScrubArgs {
     pub json: bool,
 
     /// Decryption passphrase (also used to re-encrypt output; overrides REWIND_SNAPSHOT_KEY)
+    #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
+    pub key: Option<String>,
+}
+
+#[derive(Args)]
+pub struct ReportArgs {
+    /// Path to the .rwd snapshot file
+    pub snapshot: PathBuf,
+
+    /// Output format: `md` (Markdown, default) or `html`
+    #[arg(long, default_value = "md")]
+    pub format: String,
+
+    /// Write report to file instead of stdout
+    #[arg(long, short)]
+    pub output: Option<PathBuf>,
+
+    /// Decryption passphrase for encrypted snapshots (overrides REWIND_SNAPSHOT_KEY)
+    #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
+    pub key: Option<String>,
+}
+
+#[derive(Args)]
+pub struct TimelineArgs {
+    /// Path to the .rwd snapshot file
+    pub snapshot: PathBuf,
+
+    /// Output format: `mermaid` (default, paste into any Markdown renderer) or `ascii`
+    #[arg(long, default_value = "mermaid")]
+    pub format: String,
+
+    /// Write diagram to file instead of stdout
+    #[arg(long, short)]
+    pub output: Option<PathBuf>,
+
+    /// Decryption passphrase for encrypted snapshots (overrides REWIND_SNAPSHOT_KEY)
+    #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
+    pub key: Option<String>,
+}
+
+#[derive(Args)]
+pub struct NotifyArgs {
+    /// Path to the .rwd snapshot file to summarise
+    pub snapshot: PathBuf,
+
+    /// Slack Incoming Webhook URL (or REWIND_SLACK_URL env var)
+    #[arg(long, env = "REWIND_SLACK_URL")]
+    pub slack_url: Option<String>,
+
+    /// Generic HTTP webhook URL (JSON POST). Use --slack-url for Slack-formatted payloads.
+    #[arg(long)]
+    pub webhook_url: Option<String>,
+
+    /// Extra message appended to the notification (e.g. runbook link)
+    #[arg(long, short)]
+    pub message: Option<String>,
+
+    /// Maximum number of timeline steps to include in the notification (0 = all)
+    #[arg(long, default_value = "5")]
+    pub timeline_lines: usize,
+
+    /// Print the JSON payload to stdout without sending it (useful for debugging)
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Decryption passphrase for encrypted snapshots (overrides REWIND_SNAPSHOT_KEY)
     #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
     pub key: Option<String>,
 }
