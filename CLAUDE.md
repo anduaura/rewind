@@ -111,7 +111,7 @@ Three crates in the repo:
 | 32 | RBAC / access control — token-based auth on the collection server; teams scoped to their own services | Done |
 | 33 | VS Code extension — browse, inspect, and replay `.rwd` files directly from the editor | Done |
 | 34 | Replay diff — compare two replays side-by-side; surface divergences in DB responses and timing | Done |
-| 35 | SaaS collection plane — hosted server + web UI; teams push snapshots, share replay links, view timelines | Pending |
+| 35 | SaaS collection plane — hosted server + web UI; teams push snapshots, share replay links, view timelines | Done |
 | 36 | seccomp/AppArmor profile — replace `privileged: true` with minimal capabilities + seccomp profile | Done |
 | 37 | Cloud storage sink — `rewind push s3://\|gs://\|az://` for snapshot archival to object storage | Done |
 | 38 | Grafana dashboard bundle — pre-built dashboards for the `/metrics` Prometheus endpoint | Done |
