@@ -36,7 +36,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -306,7 +306,11 @@ async fn upload_snapshot(
     }
 
     if state.max_body_bytes > 0 && body.len() > state.max_body_bytes {
-        return (StatusCode::PAYLOAD_TOO_LARGE, "snapshot exceeds size limit\n").into_response();
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "snapshot exceeds size limit\n",
+        )
+            .into_response();
     }
 
     // Name: X-Rewind-Snapshot header, else timestamp-based.

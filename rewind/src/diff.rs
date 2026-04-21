@@ -141,10 +141,10 @@ fn diff_snapshots(
             }
         }
     }
-    for i in base_db.len()..cand_db.len() {
+    for (i, ev) in cand_db.iter().enumerate().skip(base_db.len()) {
         divergences.push(Divergence {
             kind: DivergenceKind::ExtraEvent,
-            description: format!("DB[{i}] extra in candidate: {}", cand_db[i].query),
+            description: format!("DB[{i}] extra in candidate: {}", ev.query),
         });
     }
 

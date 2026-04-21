@@ -177,13 +177,13 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
 }
 
 fn is_leap(y: u64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
 fn current_user() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
-        .unwrap_or_else(|_| format!("uid:{}", unsafe { libc_getuid() }))
+        .unwrap_or_else(|_| format!("uid:{}", libc_getuid()))
 }
 
 #[cfg(unix)]
