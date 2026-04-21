@@ -46,7 +46,8 @@ RUN RUST_TARGET=$(cat /rust-target) && \
     --target "$RUST_TARGET"
 
 # Copy binary to a fixed path for the final stage
-RUN cp "$(cat /rust-target | xargs -I{} echo /build/target/{}/release/rewind)" /rewind
+RUN RUST_TARGET=$(cat /rust-target) && \
+    cp "target/${RUST_TARGET}/release/rewind" /rewind
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM gcr.io/distroless/static-debian12:nonroot
