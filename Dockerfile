@@ -23,6 +23,7 @@ RUN rustup target add "$(cat /rust-target)"
 WORKDIR /build
 
 # Cache dependencies before copying source
+COPY Cargo.toml .
 COPY rewind-common/Cargo.toml rewind-common/Cargo.toml
 COPY rewind/Cargo.toml rewind/Cargo.toml
 COPY Cargo.lock .
