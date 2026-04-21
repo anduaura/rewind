@@ -3,3 +3,4 @@
 /rewind-common/target
 /rewind-ebpf/target
 *.rwd
+!rewind/tests/fixtures/*.rwd

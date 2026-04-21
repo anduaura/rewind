@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "recorded_at_ns": 1700000000000000000,
+  "services": ["api", "worker"],
+  "events": [
+    {
+      "type": "http",
+      "timestamp_ns": 1700000000100000000,
+      "direction": "inbound",
+      "method": "POST",
+      "path": "/checkout",
+      "status_code": 200,
+      "service": "api",
+      "trace_id": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      "body": null
+    },
+    {
+      "type": "db",
+      "timestamp_ns": 1700000000200000000,
+      "protocol": "postgres",
+      "query": "SELECT * FROM orders WHERE id = $1",
+      "response": "SELECT 1",
+      "service": "worker",
+      "pid": 1234
+    },
+    {
+      "type": "db",
+      "timestamp_ns": 1700000000250000000,
+      "protocol": "redis",
+      "query": "GET session:abc123",
+      "response": "hello",
+      "service": "worker",
+      "pid": 1234
+    },
+    {
+      "type": "syscall",
+      "timestamp_ns": 1700000000300000000,
+      "kind": "clock_gettime",
+      "return_value": 0,
+      "pid": 1234
+    },
+    {
+      "type": "grpc",
+      "timestamp_ns": 1700000000400000000,
+      "path": "/payment.Service/Charge",
+      "service": "worker",
+      "pid": 5678
+    }
+  ]
+}
