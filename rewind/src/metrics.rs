@@ -31,6 +31,9 @@ pub struct Metrics {
     pub snapshots_flushed: AtomicU64,
     pub ring_buffer_capacity: AtomicU64,
     pub ring_buffer_size: AtomicU64,
+    // Collection-server counters (zero when running as agent).
+    pub server_uploads_total: AtomicU64,
+    pub server_upload_errors_total: AtomicU64,
 }
 
 impl Metrics {
@@ -43,6 +46,8 @@ impl Metrics {
             snapshots_flushed: AtomicU64::new(0),
             ring_buffer_capacity: AtomicU64::new(ring_capacity as u64),
             ring_buffer_size: AtomicU64::new(0),
+            server_uploads_total: AtomicU64::new(0),
+            server_upload_errors_total: AtomicU64::new(0),
         }
     }
 
@@ -61,6 +66,13 @@ impl Metrics {
     pub fn inc_flushed(&self) {
         self.snapshots_flushed.fetch_add(1, Ordering::Relaxed);
     }
+    pub fn inc_server_upload(&self) {
+        self.server_uploads_total.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn inc_server_upload_error(&self) {
+        self.server_upload_errors_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
 
     pub fn set_ring_size(&self, n: usize) {
         self.ring_buffer_size.store(n as u64, Ordering::Relaxed);
@@ -75,6 +87,8 @@ impl Metrics {
         let cap = self.ring_buffer_capacity.load(Ordering::Relaxed);
         let size = self.ring_buffer_size.load(Ordering::Relaxed);
         let util = (size * 1000).checked_div(cap).unwrap_or(0) as f64 / 1000.0;
+        let uploads = self.server_uploads_total.load(Ordering::Relaxed);
+        let upload_errs = self.server_upload_errors_total.load(Ordering::Relaxed);
 
         format!(
             "# HELP rewind_events_captured_total Total events captured by type\n\
@@ -94,7 +108,13 @@ impl Metrics {
              rewind_ring_buffer_size {size}\n\
              # HELP rewind_ring_buffer_utilization Ring buffer fill ratio (0–1)\n\
              # TYPE rewind_ring_buffer_utilization gauge\n\
-             rewind_ring_buffer_utilization {util:.3}\n"
+             rewind_ring_buffer_utilization {util:.3}\n\
+             # HELP rewind_server_uploads_total Snapshots successfully received by the collection server\n\
+             # TYPE rewind_server_uploads_total counter\n\
+             rewind_server_uploads_total {uploads}\n\
+             # HELP rewind_server_upload_errors_total Failed snapshot uploads to the collection server\n\
+             # TYPE rewind_server_upload_errors_total counter\n\
+             rewind_server_upload_errors_total {upload_errs}\n"
         )
     }
 }

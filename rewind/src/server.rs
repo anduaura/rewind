@@ -45,6 +45,8 @@ use tokio::fs;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::cli::{PushAgentArgs, ServerArgs};
+use crate::metrics::Metrics;
+use crate::oidc::OidcValidator;
 
 // ── TLS helpers ───────────────────────────────────────────────────────────────
 
@@ -197,6 +199,10 @@ struct ServerState {
     rate_limiter: Arc<RateLimiter>,
     /// Max allowed upload body in bytes (0 = unlimited).
     max_body_bytes: usize,
+    /// Prometheus metrics for the collection server.
+    metrics: Arc<Metrics>,
+    /// OIDC JWT validator (present when --oidc-issuer is set).
+    oidc: Option<Arc<OidcValidator>>,
 }
 
 pub async fn run(args: ServerArgs) -> Result<()> {
@@ -209,6 +215,22 @@ pub async fn run(args: ServerArgs) -> Result<()> {
     };
 
     let max_body_bytes = (args.max_snapshot_mb as usize).saturating_mul(1024 * 1024);
+    let metrics = Arc::new(Metrics::new(0));
+
+    let oidc = match &args.oidc_issuer {
+        Some(issuer) => {
+            let audience = args
+                .oidc_audience
+                .clone()
+                .unwrap_or_else(|| issuer.clone());
+            Some(Arc::new(OidcValidator::new(
+                issuer.clone(),
+                audience,
+                args.oidc_team_claim.clone(),
+            )))
+        }
+        None => None,
+    };
 
     let state = Arc::new(ServerState {
         storage: args.storage.clone(),
@@ -217,6 +239,8 @@ pub async fn run(args: ServerArgs) -> Result<()> {
         shares: Arc::new(TokioMutex::new(HashMap::new())),
         rate_limiter: Arc::new(RateLimiter::new(args.rate_limit)),
         max_body_bytes,
+        metrics: Arc::clone(&metrics),
+        oidc: oidc.clone(),
     });
 
     let body_limit = if args.max_snapshot_mb > 0 {
@@ -227,6 +251,7 @@ pub async fn run(args: ServerArgs) -> Result<()> {
 
     let app = Router::new()
         .route("/healthz", get(healthz))
+        .route("/metrics", get(server_metrics))
         .route("/snapshots", post(upload_snapshot))
         .route("/snapshots", get(list_snapshots))
         .route("/snapshots/{name}", get(download_snapshot))
@@ -240,7 +265,14 @@ pub async fn run(args: ServerArgs) -> Result<()> {
     println!("rewind server");
     println!("  listen:  {}", args.listen);
     println!("  storage: {}", args.storage.display());
-    if args.tokens_file.is_some() {
+    if args.oidc_issuer.is_some() {
+        println!(
+            "  auth:    OIDC JWT (issuer={}, audience={}, team_claim={})",
+            args.oidc_issuer.as_deref().unwrap_or(""),
+            args.oidc_audience.as_deref().unwrap_or("<issuer>"),
+            args.oidc_team_claim,
+        );
+    } else if args.tokens_file.is_some() {
         println!(
             "  auth:    RBAC token registry ({} teams)",
             state.registry.0.len()
@@ -286,26 +318,39 @@ async fn healthz() -> &'static str {
     "ok\n"
 }
 
+async fn server_metrics(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        state.metrics.prometheus_text(),
+    )
+}
+
 async fn upload_snapshot(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
-    let team = match resolve_team(&state, &headers) {
+    let team = match resolve_team(&state, &headers).await {
         Some(t) => t,
-        None => return (StatusCode::UNAUTHORIZED, "missing or invalid token\n").into_response(),
+        None => {
+            state.metrics.inc_server_upload_error();
+            return (StatusCode::UNAUTHORIZED, "missing or invalid token\n").into_response();
+        }
     };
 
     let client_ip = extract_client_ip(&headers);
     if !state.rate_limiter.check(&client_ip) {
+        state.metrics.inc_server_upload_error();
         return (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded\n").into_response();
     }
 
     if body.is_empty() {
+        state.metrics.inc_server_upload_error();
         return (StatusCode::BAD_REQUEST, "empty body\n").into_response();
     }
 
     if state.max_body_bytes > 0 && body.len() > state.max_body_bytes {
+        state.metrics.inc_server_upload_error();
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
             "snapshot exceeds size limit\n",
@@ -324,6 +369,7 @@ async fn upload_snapshot(
     // Team-namespaced storage sub-directory.
     let dir = state.storage.join(&team);
     if let Err(e) = fs::create_dir_all(&dir).await {
+        state.metrics.inc_server_upload_error();
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("mkdir failed: {e}\n"),
@@ -333,6 +379,7 @@ async fn upload_snapshot(
 
     let dest = dir.join(&filename);
     if let Err(e) = fs::write(&dest, &body).await {
+        state.metrics.inc_server_upload_error();
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("write failed: {e}\n"),
@@ -345,6 +392,7 @@ async fn upload_snapshot(
         destination: "server",
     });
 
+    state.metrics.inc_server_upload();
     tracing::info!(team, filename, bytes = body.len(), "snapshot received");
     (StatusCode::CREATED, format!("{team}/{filename}\n")).into_response()
 }
@@ -359,7 +407,7 @@ async fn list_snapshots(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let team = match resolve_team(&state, &headers) {
+    let team = match resolve_team(&state, &headers).await {
         Some(t) => t,
         None => return (StatusCode::UNAUTHORIZED, "missing or invalid token\n").into_response(),
     };
@@ -389,7 +437,7 @@ async fn download_snapshot(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let team = match resolve_team(&state, &headers) {
+    let team = match resolve_team(&state, &headers).await {
         Some(t) => t,
         None => return (StatusCode::UNAUTHORIZED, "missing or invalid token\n").into_response(),
     };
@@ -406,11 +454,9 @@ async fn download_snapshot(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Resolve a request to a team name.
-/// - No auth configured → "default" team (open server)
-/// - RBAC registry active → look up token → team name
-/// - Single token mode → token must match → "default" team
-fn resolve_team(state: &ServerState, headers: &HeaderMap) -> Option<String> {
+/// Resolve a request to a team name (static token / registry logic only).
+/// Used by tests and as the inner fallback for `resolve_team`.
+fn resolve_team_static(state: &ServerState, headers: &HeaderMap) -> Option<String> {
     let bearer = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -431,6 +477,24 @@ fn resolve_team(state: &ServerState, headers: &HeaderMap) -> Option<String> {
         // Open server (no auth configured).
         Some("default".to_string())
     }
+}
+
+/// Resolve a request to a team name.
+/// OIDC JWT validation is tried first when configured; falls back to static tokens.
+async fn resolve_team(state: &ServerState, headers: &HeaderMap) -> Option<String> {
+    if let Some(oidc) = &state.oidc {
+        let bearer = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .unwrap_or("");
+        if let Some(team) = oidc.validate(bearer).await {
+            return Some(team);
+        }
+        // Fall through to static token check so mixed-auth environments work
+        // during migration (e.g. long-lived static tokens alongside OIDC).
+    }
+    resolve_team_static(state, headers)
 }
 
 fn extract_client_ip(headers: &HeaderMap) -> String {
@@ -468,7 +532,7 @@ async fn ui_dashboard(
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let qt = params.get("token").map_or("", |s| s.as_str());
-    let team = match resolve_team_ui(&state, &headers, qt) {
+    let team = match resolve_team_ui(&state, &headers, qt).await {
         Some(t) => t,
         None => {
             return Html(ui_page(
@@ -515,7 +579,7 @@ async fn ui_snapshot_detail(
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let qt = params.get("token").map_or("", |s| s.as_str());
-    let team = match resolve_team_ui(&state, &headers, qt) {
+    let team = match resolve_team_ui(&state, &headers, qt).await {
         Some(t) => t,
         None => return Html(ui_page("unauthorized", "<p>Unauthorized.</p>")).into_response(),
     };
@@ -603,7 +667,7 @@ async fn create_share_link(
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let qt = params.get("token").map_or("", |s| s.as_str());
-    let team = match resolve_team_ui(&state, &headers, qt) {
+    let team = match resolve_team_ui(&state, &headers, qt).await {
         Some(t) => t,
         None => return (StatusCode::UNAUTHORIZED, "unauthorized\n").into_response(),
     };
@@ -676,15 +740,19 @@ fn ui_page(title: &str, body: &str) -> String {
     )
 }
 
-fn resolve_team_ui(state: &ServerState, headers: &HeaderMap, query_token: &str) -> Option<String> {
+async fn resolve_team_ui(
+    state: &ServerState,
+    headers: &HeaderMap,
+    query_token: &str,
+) -> Option<String> {
     if !query_token.is_empty() {
         let mut h = headers.clone();
         if let Ok(v) = format!("Bearer {query_token}").parse() {
             h.insert(axum::http::header::AUTHORIZATION, v);
         }
-        resolve_team(state, &h)
+        resolve_team(state, &h).await
     } else {
-        resolve_team(state, headers)
+        resolve_team(state, headers).await
     }
 }
 
@@ -775,6 +843,8 @@ mod tests {
             shares: Arc::new(TokioMutex::new(HashMap::new())),
             rate_limiter: Arc::new(RateLimiter::new(10)),
             max_body_bytes: 100 * 1024 * 1024,
+            metrics: Arc::new(Metrics::new(0)),
+            oidc: None,
         }
     }
 
@@ -782,7 +852,7 @@ mod tests {
     fn open_server_resolves_to_default() {
         let state = make_state(None, TokenRegistry::default());
         assert_eq!(
-            resolve_team(&state, &HeaderMap::new()),
+            resolve_team_static(&state, &HeaderMap::new()),
             Some("default".to_string())
         );
     }
@@ -792,7 +862,7 @@ mod tests {
         let state = make_state(Some("secret"), TokenRegistry::default());
         let mut h = HeaderMap::new();
         h.insert("authorization", "Bearer wrong".parse().unwrap());
-        assert!(resolve_team(&state, &h).is_none());
+        assert!(resolve_team_static(&state, &h).is_none());
     }
 
     #[test]
@@ -800,7 +870,10 @@ mod tests {
         let state = make_state(Some("secret"), TokenRegistry::default());
         let mut h = HeaderMap::new();
         h.insert("authorization", "Bearer secret".parse().unwrap());
-        assert_eq!(resolve_team(&state, &h), Some("default".to_string()));
+        assert_eq!(
+            resolve_team_static(&state, &h),
+            Some("default".to_string())
+        );
     }
 
     #[test]
@@ -811,7 +884,10 @@ mod tests {
         let state = make_state(None, reg);
         let mut h = HeaderMap::new();
         h.insert("authorization", "Bearer tok-a".parse().unwrap());
-        assert_eq!(resolve_team(&state, &h), Some("team-alpha".to_string()));
+        assert_eq!(
+            resolve_team_static(&state, &h),
+            Some("team-alpha".to_string())
+        );
     }
 
     #[test]
@@ -822,7 +898,7 @@ mod tests {
         let state = make_state(None, reg);
         let mut h = HeaderMap::new();
         h.insert("authorization", "Bearer tok-unknown".parse().unwrap());
-        assert!(resolve_team(&state, &h).is_none());
+        assert!(resolve_team_static(&state, &h).is_none());
     }
 
     #[test]

@@ -246,6 +246,23 @@ pub struct ServerArgs {
     /// Max snapshot uploads per minute per source IP (0 = unlimited)
     #[arg(long, default_value = "10")]
     pub rate_limit: u32,
+
+    /// OIDC issuer URL for JWT Bearer-token validation
+    /// (e.g. https://dev-xyz.okta.com or https://accounts.google.com).
+    /// When set, incoming Bearer tokens are validated as RS256 JWTs against
+    /// the issuer's JWKS endpoint.  JWKS keys are cached for 5 minutes then
+    /// refreshed on the next request.
+    #[arg(long)]
+    pub oidc_issuer: Option<String>,
+
+    /// Expected `aud` claim in incoming JWTs (required when --oidc-issuer is set)
+    #[arg(long)]
+    pub oidc_audience: Option<String>,
+
+    /// JWT claim name to use as the RBAC team (default: `team`).
+    /// Falls back to the `sub` claim when the named claim is absent.
+    #[arg(long, default_value = "team")]
+    pub oidc_team_claim: String,
 }
 
 #[derive(Args)]

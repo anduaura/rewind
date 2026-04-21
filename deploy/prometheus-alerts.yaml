@@ -1,0 +1,133 @@
+# Prometheus alerting rules for rewind agents and collection servers.
+#
+# Apply with:
+#   kubectl apply -f deploy/prometheus-alerts.yaml   (PrometheusRule CRD)
+# Or reference in your prometheus.yml:
+#   rule_files:
+#     - /etc/prometheus/rewind-alerts.yaml
+#
+# Metrics are scraped from:
+#   - Agent:  http://<pod>:9090/metrics  (rewind record / rewind attach)
+#   - Server: http://<pod>:9092/metrics  (rewind server)
+#
+# Adjust `for` durations and thresholds to match your traffic profile.
+
+groups:
+  # ── Ring buffer ────────────────────────────────────────────────────────────
+  - name: rewind.ring_buffer
+    rules:
+      - alert: RewindRingBufferHigh
+        expr: rewind_ring_buffer_utilization > 0.80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "rewind ring buffer above 80% on {{ $labels.instance }}"
+          description: >
+            The in-memory ring buffer is {{ $value | humanizePercentage }} full.
+            Events older than the ring window may start being evicted before a
+            flush is triggered.  Consider increasing the ring capacity or
+            reducing the flush window.
+
+      - alert: RewindRingBufferCritical
+        expr: rewind_ring_buffer_utilization > 0.95
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "rewind ring buffer above 95% on {{ $labels.instance }}"
+          description: >
+            The in-memory ring buffer is {{ $value | humanizePercentage }} full.
+            Old events are being dropped.  Trigger a flush immediately:
+              rewind flush --window 5m --output incident.rwd
+
+  # ── Agent health ──────────────────────────────────────────────────────────
+  - name: rewind.agent
+    rules:
+      - alert: RewindAgentStale
+        expr: rate(rewind_events_captured_total[15m]) == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "rewind agent not capturing events on {{ $labels.instance }}"
+          description: >
+            No events of any type have been captured in the last 15 minutes.
+            The agent may have crashed, lost its eBPF attach points, or the
+            monitored services may be idle.  Check: systemctl status rewind-agent
+            or kubectl logs daemonset/rewind-agent.
+
+      - alert: RewindFlushStorm
+        expr: increase(rewind_snapshots_flushed_total[5m]) > 10
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "rewind flush storm on {{ $labels.instance }}"
+          description: >
+            More than 10 snapshots were flushed in the past 5 minutes
+            (current rate: {{ $value }}).  This may indicate that an alert
+            webhook is misfiring or a tight retry loop is triggering repeated
+            flushes.  Check the webhook endpoint and PagerDuty/Opsgenie rules.
+
+      - alert: RewindHighHttpEventRate
+        expr: rate(rewind_events_captured_total{type="http"}[5m]) > 5000
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "rewind capturing >5k HTTP events/s on {{ $labels.instance }}"
+          description: >
+            The HTTP capture rate on {{ $labels.instance }} has been above
+            5 000 events/s for 10 minutes (current: {{ $value | humanize }}/s).
+            High rates increase ring buffer pressure.  Consider narrowing the
+            capture scope with --allow-paths or reducing monitored services.
+
+  # ── Collection server ─────────────────────────────────────────────────────
+  - name: rewind.server
+    rules:
+      - alert: RewindServerUploadErrorRateHigh
+        expr: >
+          rate(rewind_server_upload_errors_total[5m])
+          /
+          (rate(rewind_server_uploads_total[5m]) + rate(rewind_server_upload_errors_total[5m]))
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "rewind server upload error rate >5% on {{ $labels.instance }}"
+          description: >
+            More than 5% of snapshot uploads to the collection server are
+            failing (current error ratio: {{ $value | humanizePercentage }}).
+            Common causes: expired auth tokens, snapshot size limit exceeded,
+            or storage disk full.  Check server logs and disk usage.
+
+      - alert: RewindServerUploadErrorRateCritical
+        expr: >
+          rate(rewind_server_upload_errors_total[5m])
+          /
+          (rate(rewind_server_uploads_total[5m]) + rate(rewind_server_upload_errors_total[5m]))
+          > 0.25
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "rewind server upload error rate >25% on {{ $labels.instance }}"
+          description: >
+            More than 25% of snapshot uploads are failing.  Incident recordings
+            from agents may be lost.  Check server health at /healthz and verify
+            storage availability.
+
+      - alert: RewindServerNoUploads
+        expr: rate(rewind_server_uploads_total[30m]) == 0
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "rewind server received no uploads in 30 minutes"
+          description: >
+            The collection server at {{ $labels.instance }} has not received
+            any snapshot uploads in the last 30 minutes.  This may be normal
+            in quiet periods but could indicate that agent push-agent calls are
+            failing silently.  Verify agent connectivity to the server.
