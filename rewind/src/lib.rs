@@ -15,8 +15,10 @@
 pub mod audit;
 pub mod capture;
 pub mod cli;
+pub mod compliance;
 pub mod crypto;
 pub mod oidc;
+pub mod secrets;
 pub mod diff;
 pub mod export;
 pub mod metrics;

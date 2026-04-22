@@ -71,6 +71,8 @@ pub enum Command {
     Notify(NotifyArgs),
     /// Search a directory of .rwd snapshots for events matching given criteria
     Search(SearchArgs),
+    /// Generate a compliance evidence report (encryption, access control, audit log, retention)
+    Compliance(ComplianceArgs),
 }
 
 #[derive(Args)]
@@ -473,4 +475,51 @@ pub struct VerifyArgs {
     /// Print result as JSON
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Args)]
+pub struct ComplianceArgs {
+    /// Directory containing .rwd snapshot files (or per-team subdirectories)
+    #[arg(long, default_value = "/var/rewind/snapshots")]
+    pub snapshot_dir: PathBuf,
+
+    /// Path to the audit log file (default: /var/log/rewind/audit.log or REWIND_AUDIT_LOG)
+    #[arg(long)]
+    pub audit_log: Option<PathBuf>,
+
+    /// Path to the RBAC token registry JSON file (for access-control assessment)
+    #[arg(long)]
+    pub tokens_file: Option<PathBuf>,
+
+    /// OIDC issuer URL configured on the server (for access-control assessment)
+    #[arg(long)]
+    pub oidc_issuer: Option<String>,
+
+    /// Single Bearer token configured on the server (for access-control assessment)
+    #[arg(long)]
+    pub token: Option<String>,
+
+    /// TLS certificate path configured on the server (for transport-security assessment)
+    #[arg(long)]
+    pub tls_cert: Option<PathBuf>,
+
+    /// Encryption key/URI (plain passphrase or vault://|aws://|azure:// URI)
+    #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
+    pub key: Option<String>,
+
+    /// Retention max-age value configured on the server (e.g. 30d)
+    #[arg(long)]
+    pub max_age: Option<String>,
+
+    /// Retention max-size value configured on the server (e.g. 10GB)
+    #[arg(long)]
+    pub max_size: Option<String>,
+
+    /// Output format: `json` (default) or `markdown`
+    #[arg(long)]
+    pub format: Option<String>,
+
+    /// Write report to this file instead of stdout
+    #[arg(long)]
+    pub output: Option<PathBuf>,
 }
