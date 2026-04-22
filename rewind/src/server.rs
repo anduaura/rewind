@@ -38,7 +38,7 @@ use axum::{
 };
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::fs;
@@ -47,6 +47,7 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::cli::{PushAgentArgs, ServerArgs};
 use crate::metrics::Metrics;
 use crate::oidc::OidcValidator;
+use crate::storage::Backend;
 
 // ── TLS helpers ───────────────────────────────────────────────────────────────
 
@@ -188,7 +189,8 @@ impl RateLimiter {
 
 #[derive(Clone)]
 struct ServerState {
-    storage: PathBuf,
+    /// Pluggable storage backend (local FS or object store for HA deployments).
+    backend: Arc<Backend>,
     /// Fallback single token (no team namespacing).
     token: Option<String>,
     /// Multi-team RBAC registry (takes precedence over `token`).
@@ -206,7 +208,6 @@ struct ServerState {
 }
 
 pub async fn run(args: ServerArgs) -> Result<()> {
-    fs::create_dir_all(&args.storage).await?;
 
     let registry = if let Some(p) = &args.tokens_file {
         TokenRegistry::load(p)?
@@ -232,8 +233,22 @@ pub async fn run(args: ServerArgs) -> Result<()> {
         None => None,
     };
 
+    // Build storage backend — remote object store wins over local path.
+    let backend: Arc<Backend> = Arc::new(if let Some(url) = &args.storage_url {
+        Backend::from_url(url)?
+    } else {
+        fs::create_dir_all(&args.storage).await?;
+        Backend::Local(args.storage.clone())
+    });
+
+    let instance_id = args
+        .instance_id
+        .clone()
+        .or_else(|| hostname::get().ok().and_then(|h| h.into_string().ok()))
+        .unwrap_or_else(|| "rewind-0".to_string());
+
     let state = Arc::new(ServerState {
-        storage: args.storage.clone(),
+        backend: Arc::clone(&backend),
         token: args.token.clone(),
         registry: Arc::new(registry),
         shares: Arc::new(TokioMutex::new(HashMap::new())),
@@ -242,6 +257,22 @@ pub async fn run(args: ServerArgs) -> Result<()> {
         metrics: Arc::clone(&metrics),
         oidc: oidc.clone(),
     });
+
+    // Leader election background task — only the leader runs retention jobs.
+    {
+        let backend_clone = Arc::clone(&backend);
+        let iid = instance_id.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(
+                std::time::Duration::from_secs(crate::storage::LEADER_TTL_SECS / 2),
+            );
+            loop {
+                interval.tick().await;
+                let is_leader = backend_clone.try_become_leader(&iid).await;
+                tracing::debug!(instance_id = %iid, is_leader, "leader election tick");
+            }
+        });
+    }
 
     let body_limit = if args.max_snapshot_mb > 0 {
         DefaultBodyLimit::max(max_body_bytes)
@@ -263,8 +294,13 @@ pub async fn run(args: ServerArgs) -> Result<()> {
         .with_state(state.clone());
 
     println!("rewind server");
-    println!("  listen:  {}", args.listen);
-    println!("  storage: {}", args.storage.display());
+    println!("  listen:   {}", args.listen);
+    println!("  instance: {instance_id}");
+    if let Some(url) = &args.storage_url {
+        println!("  storage:  {url} (object store — HA mode)");
+    } else {
+        println!("  storage:  {}", args.storage.display());
+    }
     if args.oidc_issuer.is_some() {
         println!(
             "  auth:    OIDC JWT (issuer={}, audience={}, team_claim={})",
@@ -366,23 +402,11 @@ async fn upload_snapshot(
         .map(|s| s.to_string())
         .unwrap_or_else(snapshot_filename);
 
-    // Team-namespaced storage sub-directory.
-    let dir = state.storage.join(&team);
-    if let Err(e) = fs::create_dir_all(&dir).await {
+    if let Err(e) = state.backend.put(&team, &filename, body.clone()).await {
         state.metrics.inc_server_upload_error();
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("mkdir failed: {e}\n"),
-        )
-            .into_response();
-    }
-
-    let dest = dir.join(&filename);
-    if let Err(e) = fs::write(&dest, &body).await {
-        state.metrics.inc_server_upload_error();
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("write failed: {e}\n"),
+            format!("storage write failed: {e}\n"),
         )
             .into_response();
     }
@@ -412,21 +436,11 @@ async fn list_snapshots(
         None => return (StatusCode::UNAUTHORIZED, "missing or invalid token\n").into_response(),
     };
 
-    let dir = state.storage.join(&team);
-    let mut entries: Vec<SnapshotEntry> = Vec::new();
-    let mut read_dir = match fs::read_dir(&dir).await {
-        Ok(d) => d,
-        Err(_) => return Json(entries).into_response(), // empty team dir → empty list
-    };
-
-    while let Ok(Some(entry)) = read_dir.next_entry().await {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.ends_with(".rwd") {
-            continue;
-        }
-        let size_bytes = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
-        entries.push(SnapshotEntry { name, size_bytes });
-    }
+    let raw = state.backend.list(&team).await.unwrap_or_default();
+    let mut entries: Vec<SnapshotEntry> = raw
+        .into_iter()
+        .map(|(name, size_bytes)| SnapshotEntry { name, size_bytes })
+        .collect();
     entries.sort_by(|a, b| a.name.cmp(&b.name));
 
     Json(entries).into_response()
@@ -445,9 +459,8 @@ async fn download_snapshot(
         return (StatusCode::BAD_REQUEST, "invalid filename\n").into_response();
     }
 
-    let path = state.storage.join(&team).join(&name);
-    match fs::read(&path).await {
-        Ok(data) => (StatusCode::OK, data).into_response(),
+    match state.backend.get(&team, &name).await {
+        Ok(data) => (StatusCode::OK, data.to_vec()).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "not found\n").into_response(),
     }
 }
@@ -543,18 +556,9 @@ async fn ui_dashboard(
         }
     };
 
-    let dir = state.storage.join(&team);
     let mut rows = String::new();
-    if let Ok(mut rd) = fs::read_dir(&dir).await {
-        let mut entries: Vec<(String, u64)> = Vec::new();
-        while let Ok(Some(e)) = rd.next_entry().await {
-            let name = e.file_name().to_string_lossy().to_string();
-            if !name.ends_with(".rwd") {
-                continue;
-            }
-            let sz = e.metadata().await.map(|m| m.len()).unwrap_or(0);
-            entries.push((name, sz));
-        }
+    {
+        let mut entries = state.backend.list(&team).await.unwrap_or_default();
         entries.sort_by(|a, b| a.0.cmp(&b.0));
         let tqs = if qt.is_empty() {
             String::new()
@@ -586,9 +590,8 @@ async fn ui_snapshot_detail(
     if !is_safe_filename(&name) {
         return Html(ui_page("error", "<p>Invalid snapshot name.</p>")).into_response();
     }
-    let path = state.storage.join(&team).join(&name);
-    let data = match fs::read(&path).await {
-        Ok(d) => d,
+    let data = match state.backend.get(&team, &name).await {
+        Ok(b) => b.to_vec(),
         Err(_) => return Html(ui_page("not found", "<p>Snapshot not found.</p>")).into_response(),
     };
 
@@ -674,7 +677,7 @@ async fn create_share_link(
     if !is_safe_filename(&name) {
         return (StatusCode::BAD_REQUEST, "invalid filename\n").into_response();
     }
-    if !state.storage.join(&team).join(&name).exists() {
+    if !state.backend.exists(&team, &name).await {
         return (StatusCode::NOT_FOUND, "not found\n").into_response();
     }
 
@@ -714,14 +717,14 @@ async fn download_shared(
     };
     match entry {
         None => (StatusCode::NOT_FOUND, "share link expired or not found\n").into_response(),
-        Some((team, name)) => match fs::read(state.storage.join(&team).join(&name)).await {
+        Some((team, name)) => match state.backend.get(&team, &name).await {
             Ok(data) => (
                 StatusCode::OK,
                 [(
                     "content-disposition",
                     format!("attachment; filename=\"{name}\""),
                 )],
-                data,
+                data.to_vec(),
             )
                 .into_response(),
             Err(_) => (StatusCode::NOT_FOUND, "snapshot not found\n").into_response(),
@@ -837,7 +840,7 @@ mod tests {
 
     fn make_state(token: Option<&str>, registry: TokenRegistry) -> ServerState {
         ServerState {
-            storage: PathBuf::from("/tmp"),
+            backend: Arc::new(Backend::Local(std::path::PathBuf::from("/tmp"))),
             token: token.map(|s| s.to_string()),
             registry: Arc::new(registry),
             shares: Arc::new(TokioMutex::new(HashMap::new())),

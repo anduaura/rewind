@@ -73,6 +73,8 @@ pub enum Command {
     Search(SearchArgs),
     /// Generate a compliance evidence report (encryption, access control, audit log, retention)
     Compliance(ComplianceArgs),
+    /// Redact or delete snapshots containing a specific user's data (GDPR Art. 17)
+    GdprDelete(GdprDeleteArgs),
 }
 
 #[derive(Args)]
@@ -220,9 +222,21 @@ pub struct ServerArgs {
     #[arg(long, default_value = "0.0.0.0:9092")]
     pub listen: String,
 
-    /// Directory to store received snapshots
+    /// Directory to store received snapshots (local filesystem)
     #[arg(long, default_value = "/var/rewind/snapshots")]
     pub storage: PathBuf,
+
+    /// Shared-storage URL for HA / multi-replica deployments.
+    /// Accepts s3://bucket/prefix, gs://bucket/prefix, az://container/prefix.
+    /// When set, --storage is ignored and all snapshots are stored in object storage,
+    /// making every replica stateless and safe to scale with an HPA.
+    #[arg(long)]
+    pub storage_url: Option<String>,
+
+    /// Unique identifier for this server instance (used for leader election).
+    /// Defaults to the hostname.  Set to the Pod name in Kubernetes.
+    #[arg(long, env = "REWIND_INSTANCE_ID")]
+    pub instance_id: Option<String>,
 
     /// Single Bearer token for upload/download auth (or REWIND_SERVER_TOKEN env var)
     #[arg(long, env = "REWIND_SERVER_TOKEN")]
@@ -522,4 +536,31 @@ pub struct ComplianceArgs {
     /// Write report to this file instead of stdout
     #[arg(long)]
     pub output: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct GdprDeleteArgs {
+    /// Directory of .rwd snapshots to scan (supports flat and per-team layouts)
+    #[arg(long, default_value = "/var/rewind/snapshots")]
+    pub dir: PathBuf,
+
+    /// User identifier to search for across all text fields in every event
+    #[arg(long)]
+    pub user_id: String,
+
+    /// Decryption passphrase for encrypted snapshots (overrides REWIND_SNAPSHOT_KEY)
+    #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
+    pub key: Option<String>,
+
+    /// Actually perform the redaction/deletion (default: dry run, exits 1 if matches found)
+    #[arg(long)]
+    pub execute: bool,
+
+    /// Delete entire snapshots that contain matches instead of redacting in place
+    #[arg(long)]
+    pub delete_snapshots: bool,
+
+    /// Emit results as JSON
+    #[arg(long)]
+    pub json: bool,
 }

@@ -89,5 +89,9 @@ async fn main() -> Result<()> {
             rewind::search::run(args).await
         }
         Command::Compliance(args) => rewind::compliance::run(args).await,
+        Command::GdprDelete(mut args) => {
+            args.key = secrets::resolve_key_opt(args.key).await?;
+            rewind::gdpr::run(args).await
+        }
     }
 }

@@ -33,11 +33,13 @@ sha2 = "0.10"
 jsonwebtoken = "9"
 hmac = "0.12"
 hex = "0.4"
+hostname = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3"
 
 [[bench]]
 name = "ring_buffer"

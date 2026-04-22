@@ -1,0 +1,225 @@
+# rewind collection server — HA / multi-replica deployment
+#
+# Runs rewind server as a stateless Deployment backed by S3 (or GCS/Azure Blob).
+# All replicas share the same object-store bucket so any pod can serve any
+# snapshot.  An HPA scales based on CPU; leader election (built into the binary)
+# ensures only one replica runs retention cleanup at a time.
+#
+# Prerequisites:
+#   kubectl create namespace rewind
+#   kubectl create secret generic rewind-server \
+#     --from-literal=token=<your-upload-token> \
+#     --from-literal=aws-access-key-id=<key> \
+#     --from-literal=aws-secret-access-key=<secret> \
+#     -n rewind
+#
+# Usage:
+#   kubectl apply -f k8s/server-ha.yaml
+#   kubectl -n rewind port-forward svc/rewind-server 9092
+#
+# Scale manually:
+#   kubectl -n rewind scale deployment rewind-server --replicas=3
+#
+# The HPA (below) adjusts replicas automatically between 2 and 10.
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rewind-server
+  namespace: rewind
+  labels:
+    app: rewind-server
+    component: collection-server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rewind-server
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0        # zero-downtime rolling updates
+  template:
+    metadata:
+      labels:
+        app: rewind-server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9092"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: rewind-server
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: server
+          image: ghcr.io/anduaura/rewind:latest
+          imagePullPolicy: Always
+          args:
+            - server
+            - --listen=0.0.0.0:9092
+            # Use object storage for stateless HA operation.
+            # Replace with your bucket — gs:// and az:// are also supported.
+            - --storage-url=s3://$(REWIND_S3_BUCKET)/snapshots
+            # Each pod uses its name as the leader-election instance ID.
+            - --instance-id=$(POD_NAME)
+            # Retention: keep last 30 days, max 50 GB per replica-group.
+            # Only the elected leader actually runs the cleanup.
+            - --max-age=30d
+            - --max-size=50GB
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: REWIND_S3_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: rewind-server
+                  key: s3-bucket
+            - name: REWIND_SERVER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: rewind-server
+                  key: token
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: rewind-server
+                  key: aws-access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rewind-server
+                  key: aws-secret-access-key
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: rewind-server
+                  key: aws-region
+                  optional: true
+            # OIDC (optional) — uncomment to enable JWT Bearer auth.
+            # - name: REWIND_OIDC_ISSUER
+            #   value: https://accounts.google.com
+          ports:
+            - name: http
+              containerPort: 9092
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rewind-server
+  namespace: rewind
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rewind-server
+  namespace: rewind
+  labels:
+    app: rewind-server
+spec:
+  selector:
+    app: rewind-server
+  ports:
+    - name: http
+      port: 9092
+      targetPort: http
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rewind-server
+  namespace: rewind
+data:
+  s3-bucket: "rewind-snapshots"      # override with your bucket name
+  aws-region: "us-east-1"            # override with your region
+
+---
+# Horizontal Pod Autoscaler — scales 2→10 replicas based on CPU.
+# Since the server is stateless (S3-backed), new pods are immediately ready
+# to handle upload and download requests without warm-up.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: rewind-server
+  namespace: rewind
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: rewind-server
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300   # wait 5 min before scaling down
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+
+---
+# PodDisruptionBudget — ensures at least 1 replica stays up during node drains.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rewind-server
+  namespace: rewind
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: rewind-server

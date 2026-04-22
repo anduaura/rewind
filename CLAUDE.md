@@ -134,9 +134,9 @@ Three crates in the repo:
 | 51 | SSO / OIDC — `rewind server` validates RS256 JWT Bearer tokens against any OIDC provider (Okta, Azure AD, Google); JWKS auto-refresh; claims mapped to RBAC teams | Done |
 | 52 | Secret management integration — resolve `--key` from Vault, AWS Secrets Manager, or Azure Key Vault via URI scheme (`vault://`, `aws://`, `azure://`), not just env vars | Done |
 | 53 | Compliance evidence export — `rewind compliance` produces a machine-readable JSON/Markdown report: encryption status, retention config, audit log summary, RBAC setup | Done |
-| 54 | Data subject deletion — `rewind gdpr-delete --user-id <id>` scans snapshot directory and redacts/deletes all events containing matching PII patterns | Pending |
+| 54 | Data subject deletion — `rewind gdpr-delete --user-id <id>` scans snapshot directory and redacts/deletes all events containing matching PII patterns | Done |
 | 55 | Prometheus alerting rules — `deploy/alerts.yaml` with pre-built rules: ring buffer >80% full, agent disconnected, server upload error rate spike, high 5xx rate | Done |
-| 56 | HA / multi-replica server — stateless `rewind server` with shared storage back-end; leader election for retention jobs; Kubernetes HPA example | Pending |
+| 56 | HA / multi-replica server — stateless `rewind server` with shared storage back-end; leader election for retention jobs; Kubernetes HPA example | Done |
 
 ## Enterprise readiness goal
 
