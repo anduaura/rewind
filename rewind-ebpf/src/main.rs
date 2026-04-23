@@ -25,7 +25,7 @@ use aya_ebpf::{
         bpf_probe_read_user_buf,
     },
     macros::{kprobe, kretprobe, map, tracepoint},
-    maps::{HashMap, PerfEventArray},
+    maps::{HashMap, PerCpuArray, PerfEventArray},
     programs::{ProbeContext, TracePointContext},
 };
 use rewind_common::{DbEvent, DbProtocol, Direction, GrpcEvent, HttpEvent, SyscallEvent, SyscallKind};
@@ -41,6 +41,12 @@ static mut DB_EVENTS: PerfEventArray<DbEvent> = PerfEventArray::new(0);
 
 #[map(name = "GRPC_EVENTS")]
 static mut GRPC_EVENTS: PerfEventArray<GrpcEvent> = PerfEventArray::new(0);
+
+// Per-CPU scratch for HttpEvent construction — keeps the 796-byte struct off the
+// 512-byte eBPF stack.  One slot per CPU; the program is non-preemptible so there
+// is no contention within a single CPU.
+#[map(name = "HTTP_EVENT_SCRATCH")]
+static mut HTTP_EVENT_SCRATCH: PerCpuArray<HttpEvent> = PerCpuArray::with_max_entries(1, 0);
 
 /// port → DbProtocol discriminant. Userspace seeds: 5432→0, 6379→1.
 #[map(name = "WATCHED_PORTS")]
@@ -111,7 +117,7 @@ fn try_capture_send(ctx: ProbeContext) -> Result<(), i64> {
         || data.starts_with(b"OPTIONS ");
 
     if is_request || is_response {
-        emit_http_event(&ctx, &data, is_response);
+        emit_http_event(&ctx, &data, iov_base, iov_len, is_response);
         return Ok(());
     }
 
@@ -189,29 +195,39 @@ fn emit_grpc_event_from_frames(ctx: &ProbeContext, data: &[u8; 256], offset: usi
     }
 }
 
-fn emit_http_event(ctx: &ProbeContext, data: &[u8; 256], is_response: bool) {
-    let mut event = HttpEvent {
-        timestamp_ns: unsafe { bpf_ktime_get_ns() },
-        body_len: 0,
-        pid: (unsafe { bpf_get_current_pid_tgid() } >> 32) as u32,
-        status_code: 0,
-        direction: if is_response { Direction::Inbound } else { Direction::Outbound },
-        _pad: 0,
-        method: [0u8; 8],
-        path: [0u8; 128],
-        headers_raw: [0u8; 128],
-        body_raw: [0u8; 128],
+fn emit_http_event(
+    ctx: &ProbeContext,
+    data: &[u8; 256],
+    iov_base: u64,
+    iov_len: u64,
+    is_response: bool,
+) {
+    // Build the event in per-CPU map memory so the 796-byte HttpEvent struct never
+    // touches the 512-byte eBPF stack.
+    let event_ptr = unsafe {
+        match HTTP_EVENT_SCRATCH.get_ptr_mut(0) {
+            Some(p) => p,
+            None => return,
+        }
     };
 
+    unsafe { core::ptr::write_bytes(event_ptr, 0, 1) };
+
+    unsafe {
+        (*event_ptr).timestamp_ns = bpf_ktime_get_ns();
+        (*event_ptr).pid = (bpf_get_current_pid_tgid() >> 32) as u32;
+        (*event_ptr).direction = if is_response { Direction::Inbound } else { Direction::Outbound };
+    }
+
     if !is_response {
-        // Extract method.
+        // Extract method (up to 8 bytes before first space).
         let mut i = 0usize;
         while i < 8 && data[i] != b' ' {
-            event.method[i] = data[i];
+            unsafe { (*event_ptr).method[i] = data[i]; }
             i += 1;
         }
 
-        // Extract path.
+        // Extract path (between first and second space / HTTP version).
         let path_start = i + 1;
         let mut j = 0usize;
         while j < 128 {
@@ -219,11 +235,11 @@ fn emit_http_event(ctx: &ProbeContext, data: &[u8; 256], is_response: bool) {
             if c == b' ' || c == b'\r' || c == b'\n' || c == 0 {
                 break;
             }
-            event.path[j] = c;
+            unsafe { (*event_ptr).path[j] = c; }
             j += 1;
         }
 
-        // Find end of request line (\r\n) and capture first 128 bytes of headers.
+        // Skip past the request line (\r\n) and copy the first 128 header bytes.
         let mut line_end = 0usize;
         while line_end < 200 {
             if data[line_end] == b'\r' && data[line_end + 1] == b'\n' {
@@ -236,7 +252,7 @@ fn emit_http_event(ctx: &ProbeContext, data: &[u8; 256], is_response: bool) {
             let copy_len = (256 - line_end).min(128);
             let mut k = 0usize;
             while k < copy_len {
-                event.headers_raw[k] = data[line_end + k];
+                unsafe { (*event_ptr).headers_raw[k] = data[line_end + k]; }
                 k += 1;
             }
         }
@@ -245,15 +261,14 @@ fn emit_http_event(ctx: &ProbeContext, data: &[u8; 256], is_response: bool) {
             let s = (data[9] as u16 - b'0' as u16) * 100
                 + (data[10] as u16 - b'0' as u16) * 10
                 + (data[11] as u16 - b'0' as u16);
-            event.status_code = s;
+            unsafe { (*event_ptr).status_code = s; }
         }
-        event.method.copy_from_slice(b"HTTP    ");
+        unsafe { (*event_ptr).method.copy_from_slice(b"HTTP    "); }
     }
 
-    // Find \r\n\r\n (end of headers) and capture up to 128 bytes of body.
-    // This populates body_raw regardless of direction; userspace decides whether
-    // to store it based on the --capture-bodies flag.
+    // Find the header/body separator (\r\n\r\n) in the first 256 bytes.
     let mut sep = 0usize;
+    let mut found_sep = false;
     while sep + 3 < 256 {
         if data[sep] == b'\r'
             && data[sep + 1] == b'\n'
@@ -261,24 +276,32 @@ fn emit_http_event(ctx: &ProbeContext, data: &[u8; 256], is_response: bool) {
             && data[sep + 3] == b'\n'
         {
             sep += 4;
+            found_sep = true;
             break;
         }
         sep += 1;
     }
-    if sep < 256 {
-        let body_bytes = 256 - sep;
-        if body_bytes > 0 {
-            let copy_len = body_bytes.min(128);
-            event.body_len = copy_len as u32;
-            let mut k = 0usize;
-            while k < copy_len {
-                event.body_raw[k] = data[sep + k];
-                k += 1;
+
+    // Read body directly from userspace memory into event_ptr->body_raw.
+    // A fresh bpf_probe_read_user_buf at iov_base+sep captures up to 512 bytes,
+    // covering GraphQL queries, large JSON payloads, and gRPC proto bodies that
+    // the 256-byte preview window would truncate.
+    if found_sep && iov_len as usize > sep {
+        let body_available = (iov_len as usize).saturating_sub(sep);
+        let body_read_len = body_available.min(512);
+        if body_read_len > 0 {
+            let body_src = (iov_base + sep as u64) as *const u8;
+            unsafe {
+                if bpf_probe_read_user_buf(body_src, &mut (*event_ptr).body_raw[..body_read_len])
+                    .is_ok()
+                {
+                    (*event_ptr).body_len = body_read_len as u32;
+                }
             }
         }
     }
 
-    unsafe { HTTP_EVENTS.output(ctx, &event, 0) };
+    unsafe { HTTP_EVENTS.output(ctx, &*event_ptr, 0) };
 }
 
 fn emit_db_event(

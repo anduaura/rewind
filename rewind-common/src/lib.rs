@@ -41,7 +41,7 @@ pub struct HttpEvent {
     pub method: [u8; 8],       // e.g. b"GET\0\0\0\0\0"
     pub path: [u8; 128],
     pub headers_raw: [u8; 128], // bytes immediately after the request line (\r\n)
-    pub body_raw: [u8; 128],    // bytes after \r\n\r\n header separator (if body_len > 0)
+    pub body_raw: [u8; 512],    // bytes after \r\n\r\n header separator (if body_len > 0)
 }
 
 /// Emitted by the sys_exit tracepoint for clock_gettime and getrandom.

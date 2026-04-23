@@ -479,7 +479,7 @@ fn parse_http_event(
     let raw: HttpEvent = unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const HttpEvent) };
 
     let body = if capture_bodies && raw.body_len > 0 {
-        let len = (raw.body_len as usize).min(128);
+        let len = (raw.body_len as usize).min(raw.body_raw.len());
         let body_str = String::from_utf8_lossy(&raw.body_raw[..len]).into_owned();
         // Trim trailing null bytes that pad the fixed-size buffer.
         let trimmed = body_str.trim_end_matches('\0').to_string();
@@ -1377,8 +1377,8 @@ mod tests {
         let pl = path_str.len().min(128);
         path[..pl].copy_from_slice(&path_str[..pl]);
 
-        let mut body_raw = [0u8; 128];
-        let bl = body_str.len().min(128);
+        let mut body_raw = [0u8; 512];
+        let bl = body_str.len().min(512);
         body_raw[..bl].copy_from_slice(&body_str[..bl]);
         let body_len = if capture_body { bl as u32 } else { 0 };
 
