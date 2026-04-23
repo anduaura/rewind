@@ -166,9 +166,15 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
         _ => client.get(&url),
     };
     let builder = match &trigger.body {
-        Some(body) => builder
-            .header("content-type", "application/json")
-            .body(body.clone()),
+        Some(body) => {
+            let ct = trigger
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+                .map(|(_, v)| v.as_str())
+                .unwrap_or("application/json");
+            builder.header("content-type", ct).body(body.clone())
+        }
         None => builder,
     };
 
