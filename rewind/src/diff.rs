@@ -26,9 +26,11 @@
 
 use anyhow::Result;
 use serde::Serialize;
+use std::fmt;
 
 use crate::cli::DiffArgs;
 use crate::crypto;
+use crate::replay::diff as body_diff;
 use crate::store::snapshot::{Event, Snapshot};
 
 #[derive(Debug, Serialize)]
@@ -54,8 +56,23 @@ pub enum DivergenceKind {
     ExtraEvent,
     DbResponseChanged,
     HttpStatusChanged,
+    HttpBodyChanged,
     SyscallReturnChanged,
     TimingDrift,
+}
+
+impl fmt::Display for DivergenceKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingEvent         => write!(f, "missing event"),
+            Self::ExtraEvent           => write!(f, "extra event"),
+            Self::DbResponseChanged    => write!(f, "DB response changed"),
+            Self::HttpStatusChanged    => write!(f, "HTTP status changed"),
+            Self::HttpBodyChanged      => write!(f, "HTTP body changed"),
+            Self::SyscallReturnChanged => write!(f, "syscall return changed"),
+            Self::TimingDrift          => write!(f, "timing drift"),
+        }
+    }
 }
 
 pub async fn run(args: DiffArgs) -> Result<()> {
@@ -148,7 +165,7 @@ fn diff_snapshots(
         });
     }
 
-    // ── HTTP outbound status diff ────────────────────────────────────────────
+    // ── HTTP outbound status + body diff ────────────────────────────────────
     let base_http = outbound_http(baseline);
     let cand_http = outbound_http(candidate);
 
@@ -159,14 +176,52 @@ fn diff_snapshots(
                     kind: DivergenceKind::HttpStatusChanged,
                     description: format!("HTTP[{i}] path changed: {} → {}", base.path, cand.path),
                 });
-            } else if base.status_code != cand.status_code {
+                continue;
+            }
+            if base.status_code != cand.status_code {
                 divergences.push(Divergence {
                     kind: DivergenceKind::HttpStatusChanged,
                     description: format!(
-                        "HTTP[{i}] status changed for {} {}: {:?} → {:?}",
+                        "HTTP[{i}] {} {} status: {:?} → {:?}",
                         base.method, base.path, base.status_code, cand.status_code
                     ),
                 });
+            }
+            // Body comparison (only when both snapshots captured bodies).
+            if let (Some(base_body), Some(cand_body)) = (base.body, cand.body) {
+                let outcome = body_diff::compare(
+                    base.status_code,
+                    Some(base_body),
+                    cand.status_code.unwrap_or(0),
+                    cand_body,
+                );
+                if !outcome.is_match() {
+                    let desc = match &outcome.body {
+                        body_diff::BodyComparison::JsonDivergence(diffs) => {
+                            let lines: Vec<String> = diffs
+                                .iter()
+                                .map(|d| format!("  {}: {:?} → {:?}", d.path, d.recorded, d.actual))
+                                .collect();
+                            format!(
+                                "HTTP[{i}] {} {} body ({} field(s)):\n{}",
+                                base.method, base.path, diffs.len(),
+                                lines.join("\n")
+                            )
+                        }
+                        body_diff::BodyComparison::TextDivergence { recorded, actual } => {
+                            format!(
+                                "HTTP[{i}] {} {} body:\n  baseline:  {}\n  candidate: {}",
+                                base.method, base.path,
+                                recorded, actual
+                            )
+                        }
+                        _ => format!("HTTP[{i}] {} {} body diverged", base.method, base.path),
+                    };
+                    divergences.push(Divergence {
+                        kind: DivergenceKind::HttpBodyChanged,
+                        description: desc,
+                    });
+                }
             }
         }
     }
@@ -245,6 +300,7 @@ struct HttpEntry<'a> {
     method: &'a str,
     path: &'a str,
     status_code: Option<u16>,
+    body: Option<&'a str>,
 }
 
 fn outbound_http(s: &Snapshot) -> Vec<HttpEntry<'_>> {
@@ -255,6 +311,7 @@ fn outbound_http(s: &Snapshot) -> Vec<HttpEntry<'_>> {
                 method: &h.method,
                 path: &h.path,
                 status_code: h.status_code,
+                body: h.body.as_deref(),
             }),
             _ => None,
         })
@@ -315,7 +372,7 @@ fn print_report(report: &DiffReport) {
     println!("✗ {}", report.summary);
     println!();
     for (i, d) in report.divergences.iter().enumerate() {
-        println!("[{}] {:?}", i + 1, d.kind);
+        println!("[{}] {}", i + 1, d.kind);
         for line in d.description.lines() {
             println!("    {line}");
         }
@@ -406,6 +463,67 @@ mod tests {
             .divergences
             .iter()
             .any(|d| d.kind == DivergenceKind::SyscallReturnChanged));
+    }
+
+    fn http_body_ev(direction: &str, path: &str, status: Option<u16>, body: Option<&str>) -> Event {
+        Event::Http(HttpRecord {
+            timestamp_ns: 1_000_000,
+            direction: direction.to_string(),
+            method: "POST".to_string(),
+            path: path.to_string(),
+            status_code: status,
+            service: "api".to_string(),
+            trace_id: None,
+            body: body.map(|s| s.to_string()),
+            headers: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn http_body_change_detected() {
+        let base = make_snapshot(vec![http_body_ev(
+            "outbound", "/order", Some(200), Some(r#"{"id":1}"#),
+        )]);
+        let cand = make_snapshot(vec![http_body_ev(
+            "outbound", "/order", Some(200), Some(r#"{"id":2}"#),
+        )]);
+        let report = diff_snapshots("a".into(), "b".into(), &base, &cand);
+        assert!(report
+            .divergences
+            .iter()
+            .any(|d| d.kind == DivergenceKind::HttpBodyChanged));
+    }
+
+    #[test]
+    fn http_body_identical_no_divergence() {
+        let body = r#"{"status":"ok"}"#;
+        let base = make_snapshot(vec![http_body_ev("outbound", "/x", Some(200), Some(body))]);
+        let cand = make_snapshot(vec![http_body_ev("outbound", "/x", Some(200), Some(body))]);
+        let report = diff_snapshots("a".into(), "b".into(), &base, &cand);
+        assert!(!report
+            .divergences
+            .iter()
+            .any(|d| d.kind == DivergenceKind::HttpBodyChanged));
+    }
+
+    #[test]
+    fn no_body_captured_no_body_divergence() {
+        // When bodies weren't captured, body is None — should not emit HttpBodyChanged.
+        let base = make_snapshot(vec![http_ev("outbound", "/x", Some(200))]);
+        let cand = make_snapshot(vec![http_ev("outbound", "/x", Some(200))]);
+        let report = diff_snapshots("a".into(), "b".into(), &base, &cand);
+        assert!(!report
+            .divergences
+            .iter()
+            .any(|d| d.kind == DivergenceKind::HttpBodyChanged));
+    }
+
+    #[test]
+    fn divergence_kind_display() {
+        assert_eq!(DivergenceKind::DbResponseChanged.to_string(), "DB response changed");
+        assert_eq!(DivergenceKind::HttpStatusChanged.to_string(), "HTTP status changed");
+        assert_eq!(DivergenceKind::HttpBodyChanged.to_string(), "HTTP body changed");
+        assert_eq!(DivergenceKind::MissingEvent.to_string(), "missing event");
     }
 
     #[test]

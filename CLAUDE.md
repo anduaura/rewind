@@ -140,6 +140,10 @@ Three crates in the repo:
 | 57 | Webhook HMAC validation — verify PagerDuty/Opsgenie/generic webhook signatures (HMAC-SHA256) before triggering flush; unsigned requests rejected with 401 | Done |
 | 58 | Read/write RBAC — token registry gains per-token permission level (`read`, `write`, `admin`); agents get write-only, developers get read-only; enforced on all server endpoints | Done |
 | 59 | Integration test suite — server upload/list/download, retention, scrub, gdpr-delete, and compliance tested end-to-end against real filesystem; currently only inspect/export are covered | Done |
+| 60 | HTTP body capture end-to-end — eBPF probe scans for `\r\n\r\n` and copies up to 128 body bytes; agent populates `HttpRecord.body` when `--capture-bodies` set; MockServer uses recorded `content-type` header | Done |
+| 61 | Replay result validation — `rewind replay` diffs recorded vs actual response after re-execution; JSON field-by-field diff with dot-path notation; exits 1 on divergence for CI; `--no-diff` flag | Done |
+| 62 | Service attribution — `ServiceMap` resolves PIDs to service names via `docker inspect` + `/proc/<pid>/cgroup` (v1 and v2); all event parsers populate `service` field; cached per-PID | Done |
+| 63 | `rewind diff` — compare two `.rwd` snapshots without running a replay; DB response, HTTP status+body, syscall return, and timing drift detection; JSON output; exits 1 on divergence | Done |
 
 ## Enterprise readiness goal
 
