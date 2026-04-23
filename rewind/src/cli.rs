@@ -214,6 +214,12 @@ pub struct WebhookArgs {
     /// X-Rewind-Secret: <secret> header (or REWIND_WEBHOOK_SECRET env var)
     #[arg(long, env = "REWIND_WEBHOOK_SECRET")]
     pub secret: Option<String>,
+
+    /// HMAC-SHA256 signing secret for verified webhook sources.
+    /// When set, every request must include a valid X-Hub-Signature-256 or
+    /// X-PagerDuty-Signature header.  Takes precedence over --secret.
+    #[arg(long, env = "REWIND_WEBHOOK_HMAC_SECRET")]
+    pub hmac_secret: Option<String>,
 }
 
 #[derive(Args)]

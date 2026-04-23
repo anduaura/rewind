@@ -28,18 +28,23 @@
 
 use anyhow::Result;
 use axum::{
+    body::Bytes,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::post,
     Router,
 };
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 use crate::cli::WebhookArgs;
+
+type HmacSha256 = Hmac<Sha256>;
 
 const SOCKET_PATH: &str = "/tmp/rewind.sock";
 
@@ -48,6 +53,7 @@ struct AppState {
     output_dir: PathBuf,
     window: String,
     secret: Option<String>,
+    hmac_secret: Option<String>,
 }
 
 pub async fn run(args: WebhookArgs) -> Result<()> {
@@ -55,13 +61,16 @@ pub async fn run(args: WebhookArgs) -> Result<()> {
         output_dir: args.output_dir,
         window: args.window,
         secret: args.secret,
+        hmac_secret: args.hmac_secret,
     });
 
     println!("rewind webhook");
     println!("  listen:  {}", args.listen);
     println!("  output:  {}", state.output_dir.display());
     println!("  window:  {}", state.window);
-    if state.secret.is_some() {
+    if state.hmac_secret.is_some() {
+        println!("  auth:    HMAC-SHA256 signature required (X-Hub-Signature-256 / X-PagerDuty-Signature)");
+    } else if state.secret.is_some() {
         println!("  auth:    X-Rewind-Secret required");
     }
 
@@ -78,22 +87,28 @@ pub async fn run(args: WebhookArgs) -> Result<()> {
 async fn handle_webhook(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    body: String,
+    body: Bytes,
 ) -> impl IntoResponse {
-    // Optional secret check.
-    if let Some(expected) = &state.secret {
+    // HMAC signature check (takes precedence over plain secret).
+    if let Some(hmac_key) = &state.hmac_secret {
+        if !verify_hmac_signature(&headers, &body, hmac_key) {
+            tracing::warn!("webhook HMAC signature mismatch — request rejected");
+            return (StatusCode::UNAUTHORIZED, "invalid or missing webhook signature\n")
+                .into_response();
+        }
+    } else if let Some(expected) = &state.secret {
+        // Fallback: plain header token check.
         let provided = headers
             .get("x-rewind-secret")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         if provided != expected {
-            return (
-                StatusCode::UNAUTHORIZED,
-                "invalid or missing X-Rewind-Secret\n",
-            )
+            return (StatusCode::UNAUTHORIZED, "invalid or missing X-Rewind-Secret\n")
                 .into_response();
         }
     }
+
+    let body = String::from_utf8_lossy(&body).into_owned();
 
     let alert_source = detect_source(&headers, &body);
     let ts = timestamp_tag();
@@ -177,6 +192,61 @@ fn parse_window_secs(window: &str) -> Result<u64> {
     }
 }
 
+/// Verify a webhook HMAC-SHA256 signature.
+///
+/// Accepts two formats:
+///   `X-Hub-Signature-256: sha256=<hex>`  — GitHub / generic
+///   `X-PagerDuty-Signature: v1=<hex>`   — PagerDuty v3
+///
+/// Returns `true` if any recognised, present signature is valid.
+/// Returns `false` if all present signatures fail, or if no signature header
+/// is found (unsigned requests are always rejected when HMAC is configured).
+pub fn verify_hmac_signature(headers: &HeaderMap, body: &[u8], secret: &str) -> bool {
+    let expected = hmac_sha256_hex(secret.as_bytes(), body);
+
+    // GitHub / generic: "sha256=<hex>"
+    if let Some(sig) = headers
+        .get("x-hub-signature-256")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("sha256="))
+    {
+        return constant_time_eq(sig.as_bytes(), expected.as_bytes());
+    }
+
+    // PagerDuty v3: "v1=<hex>[,v1=<hex>]"
+    if let Some(raw) = headers
+        .get("x-pagerduty-signature")
+        .and_then(|v| v.to_str().ok())
+    {
+        for part in raw.split(',') {
+            if let Some(sig) = part.trim().strip_prefix("v1=") {
+                if constant_time_eq(sig.as_bytes(), expected.as_bytes()) {
+                    return true;
+                }
+            }
+        }
+        // Header was present but no part matched — reject.
+        return false;
+    }
+
+    // No recognised signature header found — reject unsigned request.
+    false
+}
+
+fn hmac_sha256_hex(key: &[u8], data: &[u8]) -> String {
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(data);
+    hex::encode(mac.finalize().into_bytes())
+}
+
+/// Constant-time byte comparison to prevent timing attacks.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 /// Heuristically identify the alert source from headers or body.
 fn detect_source(headers: &HeaderMap, body: &str) -> &'static str {
     if headers.contains_key("x-pagerduty-signature") {
@@ -212,5 +282,65 @@ mod tests {
     #[test]
     fn detect_unknown() {
         assert_eq!(detect_source(&HeaderMap::new(), "{}"), "unknown");
+    }
+
+    fn hub_sig(secret: &str, body: &[u8]) -> String {
+        format!("sha256={}", hmac_sha256_hex(secret.as_bytes(), body))
+    }
+
+    #[test]
+    fn hmac_github_style_valid() {
+        let body = b"hello";
+        let mut h = HeaderMap::new();
+        h.insert("x-hub-signature-256", hub_sig("mysecret", body).parse().unwrap());
+        assert!(verify_hmac_signature(&h, body, "mysecret"));
+    }
+
+    #[test]
+    fn hmac_github_style_wrong_secret_rejected() {
+        let body = b"hello";
+        let mut h = HeaderMap::new();
+        h.insert("x-hub-signature-256", hub_sig("wrongsecret", body).parse().unwrap());
+        assert!(!verify_hmac_signature(&h, body, "mysecret"));
+    }
+
+    #[test]
+    fn hmac_pagerduty_style_valid() {
+        let body = b"alert payload";
+        let sig = format!("v1={}", hmac_sha256_hex(b"pdsecret", body));
+        let mut h = HeaderMap::new();
+        h.insert("x-pagerduty-signature", sig.parse().unwrap());
+        assert!(verify_hmac_signature(&h, body, "pdsecret"));
+    }
+
+    #[test]
+    fn hmac_pagerduty_multiple_sigs_first_valid() {
+        let body = b"payload";
+        let good = format!("v1={}", hmac_sha256_hex(b"secret", body));
+        let bad = "v1=000000000000000000000000000000000000000000000000000000000000dead";
+        let raw = format!("{good},{bad}");
+        let mut h = HeaderMap::new();
+        h.insert("x-pagerduty-signature", raw.parse().unwrap());
+        assert!(verify_hmac_signature(&h, body, "secret"));
+    }
+
+    #[test]
+    fn hmac_no_signature_header_rejected() {
+        assert!(!verify_hmac_signature(&HeaderMap::new(), b"body", "secret"));
+    }
+
+    #[test]
+    fn constant_time_eq_same() {
+        assert!(constant_time_eq(b"abc", b"abc"));
+    }
+
+    #[test]
+    fn constant_time_eq_different_length() {
+        assert!(!constant_time_eq(b"abc", b"abcd"));
+    }
+
+    #[test]
+    fn constant_time_eq_different_content() {
+        assert!(!constant_time_eq(b"abc", b"xyz"));
     }
 }

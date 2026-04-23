@@ -126,26 +126,97 @@ async fn serve_tls(
     }
 }
 
-/// Maps bearer token → team name for RBAC.
-/// Loaded from a JSON file: {"token1": "team-a", "token2": "team-b"}
+/// Permission level for a token.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Permission {
+    /// Upload snapshots only.
+    Write,
+    /// Download and list snapshots only.
+    Read,
+    /// Full access (upload, download, list, share links).
+    Admin,
+}
+
+impl Permission {
+    pub fn can_read(&self) -> bool {
+        matches!(self, Self::Read | Self::Admin)
+    }
+    pub fn can_write(&self) -> bool {
+        matches!(self, Self::Write | Self::Admin)
+    }
+}
+
+/// Resolved identity after authentication.
+pub struct TeamAccess {
+    pub team: String,
+    pub perm: Permission,
+}
+
+/// Per-token entry in the registry (rich format).
+#[derive(serde::Deserialize)]
+struct TokenEntry {
+    team: String,
+    #[serde(default = "default_perm")]
+    perm: Permission,
+}
+
+fn default_perm() -> Permission {
+    Permission::Admin
+}
+
+/// Maps bearer token → team + permission for RBAC.
+///
+/// The JSON file supports two formats:
+///
+///   Simple (backward-compatible): `{"token": "team-name"}`
+///   Rich:  `{"token": {"team": "team-name", "perm": "read|write|admin"}}`
+///
+/// Tokens in simple format are granted `admin` permission.
+/// Mixed files are accepted.
 #[derive(Clone, Default)]
-pub struct TokenRegistry(HashMap<String, String>);
+pub struct TokenRegistry(HashMap<String, (String, Permission)>);
 
 impl TokenRegistry {
     pub fn load(path: &std::path::Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)?;
-        let map: HashMap<String, String> = serde_json::from_str(&raw)?;
+        let v: serde_json::Value = serde_json::from_str(&raw)?;
+        let obj = v.as_object().ok_or_else(|| anyhow::anyhow!("tokens file must be a JSON object"))?;
+        let mut map = HashMap::new();
+        for (token, val) in obj {
+            let (team, perm) = if let Some(s) = val.as_str() {
+                (s.to_string(), Permission::Admin)
+            } else {
+                let entry: TokenEntry = serde_json::from_value(val.clone())
+                    .map_err(|e| anyhow::anyhow!("invalid entry for token '{token}': {e}"))?;
+                (entry.team, entry.perm)
+            };
+            map.insert(token.clone(), (team, perm));
+        }
         Ok(Self(map))
     }
 
-    /// Resolve a bearer token → team name.
-    /// Returns None if the token is invalid.
-    pub fn resolve(&self, token: &str) -> Option<&str> {
-        self.0.get(token).map(|s| s.as_str())
+    /// Resolve a bearer token → `TeamAccess`.  Returns `None` if the token is not registered.
+    pub fn resolve(&self, token: &str) -> Option<TeamAccess> {
+        self.0.get(token).map(|(team, perm)| TeamAccess {
+            team: team.clone(),
+            perm: perm.clone(),
+        })
     }
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[cfg(test)]
+    pub fn load_from_str(s: &str) -> Result<Self> {
+        let tmp = tempfile::NamedTempFile::new()?;
+        std::fs::write(tmp.path(), s)?;
+        Self::load(tmp.path())
     }
 }
 
@@ -285,11 +356,11 @@ pub async fn run(args: ServerArgs) -> Result<()> {
         .route("/metrics", get(server_metrics))
         .route("/snapshots", post(upload_snapshot))
         .route("/snapshots", get(list_snapshots))
-        .route("/snapshots/{name}", get(download_snapshot))
-        .route("/snapshots/{name}/share", post(create_share_link))
+        .route("/snapshots/:name", get(download_snapshot))
+        .route("/snapshots/:name/share", post(create_share_link))
         .route("/ui", get(ui_dashboard))
-        .route("/ui/{name}", get(ui_snapshot_detail))
-        .route("/share/{token}", get(download_shared))
+        .route("/ui/:name", get(ui_snapshot_detail))
+        .route("/share/:token", get(download_shared))
         .layer(body_limit)
         .with_state(state.clone());
 
@@ -311,7 +382,7 @@ pub async fn run(args: ServerArgs) -> Result<()> {
     } else if args.tokens_file.is_some() {
         println!(
             "  auth:    RBAC token registry ({} teams)",
-            state.registry.0.len()
+            state.registry.len()
         );
     } else if args.token.is_some() {
         println!("  auth:    Authorization: Bearer <token> required");
@@ -366,13 +437,18 @@ async fn upload_snapshot(
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
-    let team = match resolve_team(&state, &headers).await {
-        Some(t) => t,
+    let access = match resolve_team(&state, &headers).await {
+        Some(a) => a,
         None => {
             state.metrics.inc_server_upload_error();
             return (StatusCode::UNAUTHORIZED, "missing or invalid token\n").into_response();
         }
     };
+    if !access.perm.can_write() {
+        state.metrics.inc_server_upload_error();
+        return (StatusCode::FORBIDDEN, "token does not have write permission\n").into_response();
+    }
+    let team = access.team;
 
     let client_ip = extract_client_ip(&headers);
     if !state.rate_limiter.check(&client_ip) {
@@ -431,10 +507,14 @@ async fn list_snapshots(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let team = match resolve_team(&state, &headers).await {
-        Some(t) => t,
+    let access = match resolve_team(&state, &headers).await {
+        Some(a) => a,
         None => return (StatusCode::UNAUTHORIZED, "missing or invalid token\n").into_response(),
     };
+    if !access.perm.can_read() {
+        return (StatusCode::FORBIDDEN, "token does not have read permission\n").into_response();
+    }
+    let team = access.team;
 
     let raw = state.backend.list(&team).await.unwrap_or_default();
     let mut entries: Vec<SnapshotEntry> = raw
@@ -451,10 +531,14 @@ async fn download_snapshot(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let team = match resolve_team(&state, &headers).await {
-        Some(t) => t,
+    let access = match resolve_team(&state, &headers).await {
+        Some(a) => a,
         None => return (StatusCode::UNAUTHORIZED, "missing or invalid token\n").into_response(),
     };
+    if !access.perm.can_read() {
+        return (StatusCode::FORBIDDEN, "token does not have read permission\n").into_response();
+    }
+    let team = access.team;
     if !is_safe_filename(&name) {
         return (StatusCode::BAD_REQUEST, "invalid filename\n").into_response();
     }
@@ -469,7 +553,7 @@ async fn download_snapshot(
 
 /// Resolve a request to a team name (static token / registry logic only).
 /// Used by tests and as the inner fallback for `resolve_team`.
-fn resolve_team_static(state: &ServerState, headers: &HeaderMap) -> Option<String> {
+fn resolve_team_static(state: &ServerState, headers: &HeaderMap) -> Option<TeamAccess> {
     let bearer = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -478,23 +562,23 @@ fn resolve_team_static(state: &ServerState, headers: &HeaderMap) -> Option<Strin
 
     if !state.registry.is_empty() {
         // RBAC mode: token must be in registry.
-        state.registry.resolve(bearer).map(|t| t.to_string())
+        state.registry.resolve(bearer)
     } else if let Some(expected) = &state.token {
-        // Single-token mode.
+        // Single-token mode: full admin access.
         if bearer == expected {
-            Some("default".to_string())
+            Some(TeamAccess { team: "default".to_string(), perm: Permission::Admin })
         } else {
             None
         }
     } else {
-        // Open server (no auth configured).
-        Some("default".to_string())
+        // Open server (no auth configured) — admin access.
+        Some(TeamAccess { team: "default".to_string(), perm: Permission::Admin })
     }
 }
 
-/// Resolve a request to a team name.
+/// Resolve a request to a `TeamAccess`.
 /// OIDC JWT validation is tried first when configured; falls back to static tokens.
-async fn resolve_team(state: &ServerState, headers: &HeaderMap) -> Option<String> {
+async fn resolve_team(state: &ServerState, headers: &HeaderMap) -> Option<TeamAccess> {
     if let Some(oidc) = &state.oidc {
         let bearer = headers
             .get("authorization")
@@ -502,10 +586,10 @@ async fn resolve_team(state: &ServerState, headers: &HeaderMap) -> Option<String
             .and_then(|v| v.strip_prefix("Bearer "))
             .unwrap_or("");
         if let Some(team) = oidc.validate(bearer).await {
-            return Some(team);
+            // OIDC tokens get admin access (team-scoped by OIDC claims).
+            return Some(TeamAccess { team, perm: Permission::Admin });
         }
-        // Fall through to static token check so mixed-auth environments work
-        // during migration (e.g. long-lived static tokens alongside OIDC).
+        // Fall through to static token check so mixed-auth environments work.
     }
     resolve_team_static(state, headers)
 }
@@ -748,7 +832,7 @@ async fn resolve_team_ui(
     headers: &HeaderMap,
     query_token: &str,
 ) -> Option<String> {
-    if !query_token.is_empty() {
+    let access = if !query_token.is_empty() {
         let mut h = headers.clone();
         if let Ok(v) = format!("Bearer {query_token}").parse() {
             h.insert(axum::http::header::AUTHORIZATION, v);
@@ -756,7 +840,9 @@ async fn resolve_team_ui(
         resolve_team(state, &h).await
     } else {
         resolve_team(state, headers).await
-    }
+    };
+    // UI endpoints are read-only; require at least read permission.
+    access.filter(|a| a.perm.can_read()).map(|a| a.team)
 }
 
 fn random_token() -> String {
@@ -854,10 +940,9 @@ mod tests {
     #[test]
     fn open_server_resolves_to_default() {
         let state = make_state(None, TokenRegistry::default());
-        assert_eq!(
-            resolve_team_static(&state, &HeaderMap::new()),
-            Some("default".to_string())
-        );
+        let access = resolve_team_static(&state, &HeaderMap::new());
+        assert!(access.is_some());
+        assert_eq!(access.unwrap().team, "default");
     }
 
     #[test]
@@ -873,35 +958,73 @@ mod tests {
         let state = make_state(Some("secret"), TokenRegistry::default());
         let mut h = HeaderMap::new();
         h.insert("authorization", "Bearer secret".parse().unwrap());
-        assert_eq!(
-            resolve_team_static(&state, &h),
-            Some("default".to_string())
-        );
+        let access = resolve_team_static(&state, &h);
+        assert!(access.is_some());
+        let access = access.unwrap();
+        assert_eq!(access.team, "default");
+        assert_eq!(access.perm, Permission::Admin);
+    }
+
+    #[test]
+    fn single_token_grants_admin_perm() {
+        let state = make_state(Some("tok"), TokenRegistry::default());
+        let mut h = HeaderMap::new();
+        h.insert("authorization", "Bearer tok".parse().unwrap());
+        let access = resolve_team_static(&state, &h).unwrap();
+        assert!(access.perm.can_read());
+        assert!(access.perm.can_write());
     }
 
     #[test]
     fn rbac_registry_maps_token_to_team() {
         let mut map = std::collections::HashMap::new();
-        map.insert("tok-a".to_string(), "team-alpha".to_string());
+        map.insert("tok-a".to_string(), ("team-alpha".to_string(), Permission::Admin));
         let reg = TokenRegistry(map);
         let state = make_state(None, reg);
         let mut h = HeaderMap::new();
         h.insert("authorization", "Bearer tok-a".parse().unwrap());
-        assert_eq!(
-            resolve_team_static(&state, &h),
-            Some("team-alpha".to_string())
-        );
+        let access = resolve_team_static(&state, &h);
+        assert!(access.is_some());
+        assert_eq!(access.unwrap().team, "team-alpha");
     }
 
     #[test]
     fn rbac_registry_unknown_token_returns_none() {
         let mut map = std::collections::HashMap::new();
-        map.insert("tok-a".to_string(), "team-alpha".to_string());
+        map.insert("tok-a".to_string(), ("team-alpha".to_string(), Permission::Admin));
         let reg = TokenRegistry(map);
         let state = make_state(None, reg);
         let mut h = HeaderMap::new();
         h.insert("authorization", "Bearer tok-unknown".parse().unwrap());
         assert!(resolve_team_static(&state, &h).is_none());
+    }
+
+    #[test]
+    fn rbac_registry_write_only_token_cannot_read() {
+        let reg = TokenRegistry::load_from_str(
+            r#"{"agent": {"team": "payments", "perm": "write"}}"#,
+        )
+        .unwrap();
+        let state = make_state(None, reg);
+        let mut h = HeaderMap::new();
+        h.insert("authorization", "Bearer agent".parse().unwrap());
+        let access = resolve_team_static(&state, &h).unwrap();
+        assert!(access.perm.can_write());
+        assert!(!access.perm.can_read());
+    }
+
+    #[test]
+    fn rbac_registry_read_only_token_cannot_write() {
+        let reg = TokenRegistry::load_from_str(
+            r#"{"dev": {"team": "payments", "perm": "read"}}"#,
+        )
+        .unwrap();
+        let state = make_state(None, reg);
+        let mut h = HeaderMap::new();
+        h.insert("authorization", "Bearer dev".parse().unwrap());
+        let access = resolve_team_static(&state, &h).unwrap();
+        assert!(access.perm.can_read());
+        assert!(!access.perm.can_write());
     }
 
     #[test]
