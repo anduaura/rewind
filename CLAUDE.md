@@ -137,6 +137,9 @@ Three crates in the repo:
 | 54 | Data subject deletion — `rewind gdpr-delete --user-id <id>` scans snapshot directory and redacts/deletes all events containing matching PII patterns | Done |
 | 55 | Prometheus alerting rules — `deploy/alerts.yaml` with pre-built rules: ring buffer >80% full, agent disconnected, server upload error rate spike, high 5xx rate | Done |
 | 56 | HA / multi-replica server — stateless `rewind server` with shared storage back-end; leader election for retention jobs; Kubernetes HPA example | Done |
+| 57 | Webhook HMAC validation — verify PagerDuty/Opsgenie/generic webhook signatures (HMAC-SHA256) before triggering flush; unsigned requests rejected with 401 | Done |
+| 58 | Read/write RBAC — token registry gains per-token permission level (`read`, `write`, `admin`); agents get write-only, developers get read-only; enforced on all server endpoints | Done |
+| 59 | Integration test suite — server upload/list/download, retention, scrub, gdpr-delete, and compliance tested end-to-end against real filesystem; currently only inspect/export are covered | Done |
 
 ## Enterprise readiness goal
 
