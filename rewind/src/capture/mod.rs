@@ -14,3 +14,4 @@
 
 pub mod agent;
 pub mod ring;
+pub mod service_map;

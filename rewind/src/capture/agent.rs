@@ -32,6 +32,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::signal;
 
 use crate::capture::ring::RingBuffer;
+use crate::capture::service_map::ServiceMap;
 use crate::cli::{AttachArgs, FlushArgs, RecordArgs};
 use crate::metrics::Metrics;
 use crate::scrub::ScrubConfig;
@@ -101,11 +102,14 @@ pub async fn run(args: RecordArgs) -> Result<()> {
     attach_probes(&mut bpf)?;
     init_watched_ports(&mut bpf)?;
 
+    let service_map = Arc::new(ServiceMap::build(&args.services));
+
     let http_task = spawn_http_drain(
         &mut bpf,
         Arc::clone(&ring),
         Arc::clone(&metrics),
         Arc::clone(&scrub),
+        Arc::clone(&service_map),
         args.capture_bodies,
     )?;
     let syscall_task = spawn_syscall_drain(&mut bpf, Arc::clone(&ring), Arc::clone(&metrics))?;
@@ -114,12 +118,14 @@ pub async fn run(args: RecordArgs) -> Result<()> {
         Arc::clone(&ring),
         Arc::clone(&pending_db),
         Arc::clone(&metrics),
+        Arc::clone(&service_map),
     )?;
     let grpc_task = spawn_grpc_drain(
         &mut bpf,
         Arc::clone(&ring),
         Arc::clone(&metrics),
         Arc::clone(&scrub),
+        Arc::clone(&service_map),
     )?;
 
     let services = args.services.clone();
@@ -294,10 +300,11 @@ fn spawn_http_drain(
     ring: Arc<Mutex<RingBuffer>>,
     metrics: Arc<Metrics>,
     scrub: Arc<ScrubConfig>,
+    service_map: Arc<ServiceMap>,
     capture_bodies: bool,
 ) -> Result<tokio::task::JoinHandle<()>> {
     drain_perf_array(bpf, "HTTP_EVENTS", 1024, ring, move |buf| {
-        let mut record = parse_http_event(buf, capture_bodies)?;
+        let mut record = parse_http_event(buf, capture_bodies, &service_map)?;
         scrub.scrub_headers(&mut record.headers);
         if !scrub.path_allowed(&record.path) {
             anyhow::bail!("path not in allow-list");
@@ -324,9 +331,10 @@ fn spawn_grpc_drain(
     ring: Arc<Mutex<RingBuffer>>,
     metrics: Arc<Metrics>,
     scrub: Arc<ScrubConfig>,
+    service_map: Arc<ServiceMap>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     drain_perf_array(bpf, "GRPC_EVENTS", 512, ring, move |buf| {
-        let record = parse_grpc_event(buf)?;
+        let record = parse_grpc_event(buf, &service_map)?;
         if !scrub.path_allowed(&record.path) {
             anyhow::bail!("path not in allow-list");
         }
@@ -340,6 +348,7 @@ fn spawn_db_drain(
     ring: Arc<Mutex<RingBuffer>>,
     pending_db: Arc<Mutex<PendingDb>>,
     metrics: Arc<Metrics>,
+    service_map: Arc<ServiceMap>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let mut perf_array = AsyncPerfEventArray::try_from(
         bpf.take_map("DB_EVENTS")
@@ -357,6 +366,7 @@ fn spawn_db_drain(
             let ring = Arc::clone(&ring);
             let pending_db = Arc::clone(&pending_db);
             let metrics = Arc::clone(&metrics);
+            let service_map = Arc::clone(&service_map);
 
             tasks.push(tokio::spawn(async move {
                 let mut buffers = (0..10)
@@ -367,7 +377,7 @@ fn spawn_db_drain(
                         break;
                     };
                     for b in buffers.iter().take(info.read) {
-                        if correlate_db_buf(b, &ring, &pending_db) {
+                        if correlate_db_buf(b, &ring, &pending_db, &service_map) {
                             metrics.inc_db();
                         }
                     }
@@ -458,7 +468,11 @@ fn parse_raw_headers(raw: &[u8; 128]) -> Vec<(String, String)> {
     headers
 }
 
-fn parse_http_event(buf: &BytesMut, capture_bodies: bool) -> Result<HttpRecord> {
+fn parse_http_event(
+    buf: &BytesMut,
+    capture_bodies: bool,
+    service_map: &ServiceMap,
+) -> Result<HttpRecord> {
     if buf.len() < std::mem::size_of::<HttpEvent>() {
         anyhow::bail!("buffer too small for HttpEvent");
     }
@@ -488,7 +502,7 @@ fn parse_http_event(buf: &BytesMut, capture_bodies: bool) -> Result<HttpRecord> 
         } else {
             Some(raw.status_code)
         },
-        service: String::new(),
+        service: service_map.lookup(raw.pid),
         trace_id: extract_traceparent(&raw.headers_raw),
         body,
         headers: parse_raw_headers(&raw.headers_raw),
@@ -533,7 +547,7 @@ fn parse_syscall_event(buf: &BytesMut) -> Result<SyscallRecord> {
     })
 }
 
-fn parse_grpc_event(buf: &BytesMut) -> Result<GrpcRecord> {
+fn parse_grpc_event(buf: &BytesMut, service_map: &ServiceMap) -> Result<GrpcRecord> {
     if buf.len() < std::mem::size_of::<GrpcEvent>() {
         anyhow::bail!("buffer too small for GrpcEvent");
     }
@@ -542,7 +556,7 @@ fn parse_grpc_event(buf: &BytesMut) -> Result<GrpcRecord> {
     Ok(GrpcRecord {
         timestamp_ns: raw.timestamp_ns,
         path,
-        service: String::new(),
+        service: service_map.lookup(raw.pid),
         pid: raw.pid,
     })
 }
@@ -608,6 +622,7 @@ fn correlate_db_buf(
     buf: &BytesMut,
     ring: &Arc<Mutex<RingBuffer>>,
     pending: &Arc<Mutex<PendingDb>>,
+    service_map: &ServiceMap,
 ) -> bool {
     if buf.len() < std::mem::size_of::<DbEvent>() {
         return false;
@@ -637,7 +652,7 @@ fn correlate_db_buf(
             protocol: protocol.to_string(),
             query,
             response: None,
-            service: String::new(),
+            service: service_map.lookup(raw.pid),
             pid: raw.pid,
         };
         pending
@@ -1283,6 +1298,7 @@ fn parse_window_secs(window: &str) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::service_map::ServiceMap;
 
     // ── parse_window_secs ──────────────────────────────────────────────────────
 
@@ -1390,7 +1406,7 @@ mod tests {
     #[test]
     fn body_captured_when_flag_set() {
         let buf = make_http_event_buf(b"POST", b"/checkout", b"{\"amount\":100}", true);
-        let record = parse_http_event(&buf, true).unwrap();
+        let record = parse_http_event(&buf, true, &ServiceMap::empty()).unwrap();
         assert_eq!(record.body, Some("{\"amount\":100}".to_string()));
         assert_eq!(record.method, "POST");
         assert_eq!(record.path, "/checkout");
@@ -1399,14 +1415,14 @@ mod tests {
     #[test]
     fn body_suppressed_when_flag_unset() {
         let buf = make_http_event_buf(b"POST", b"/checkout", b"{\"amount\":100}", true);
-        let record = parse_http_event(&buf, false).unwrap();
+        let record = parse_http_event(&buf, false, &ServiceMap::empty()).unwrap();
         assert_eq!(record.body, None);
     }
 
     #[test]
     fn body_none_when_body_len_zero() {
         let buf = make_http_event_buf(b"GET", b"/health", b"", false);
-        let record = parse_http_event(&buf, true).unwrap();
+        let record = parse_http_event(&buf, true, &ServiceMap::empty()).unwrap();
         assert_eq!(record.body, None);
     }
 
@@ -1414,7 +1430,7 @@ mod tests {
     fn body_null_bytes_trimmed() {
         // body_raw is zero-padded; trailing nulls should be stripped
         let buf = make_http_event_buf(b"POST", b"/api", b"hi", true);
-        let record = parse_http_event(&buf, true).unwrap();
+        let record = parse_http_event(&buf, true, &ServiceMap::empty()).unwrap();
         assert_eq!(record.body, Some("hi".to_string()));
     }
 
