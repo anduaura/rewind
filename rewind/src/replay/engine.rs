@@ -21,6 +21,7 @@ use chrono::{TimeZone, Utc};
 
 use crate::cli::ReplayArgs;
 use crate::crypto;
+use crate::replay::diff;
 use crate::replay::network::MockServer;
 use crate::store::snapshot::{Event, HttpRecord, Snapshot};
 
@@ -63,11 +64,37 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
         })
         .context("snapshot contains no inbound trigger request")?;
 
+    // The recorded response to the trigger: same direction + method + path,
+    // with a status code (i.e. the response the service sent back).
+    let recorded_response: Option<HttpRecord> = snapshot
+        .events
+        .iter()
+        .find_map(|e| match e {
+            Event::Http(h)
+                if h.direction == "inbound"
+                    && h.status_code.is_some()
+                    && h.method == trigger.method
+                    && h.path == trigger.path =>
+            {
+                Some(h.clone())
+            }
+            _ => None,
+        });
+
     println!("  trigger:  {} {}", trigger.method, trigger.path);
     println!(
         "  mocking:  {} outbound responses",
         outbound_responses.len()
     );
+    if let Some(ref rec) = recorded_response {
+        println!(
+            "  baseline: status={} body={}",
+            rec.status_code.unwrap_or(0),
+            if rec.body.is_some() { "captured" } else { "none (run with --capture-bodies)" }
+        );
+    } else {
+        println!("  baseline: none (no matching response in snapshot)");
+    }
     println!();
 
     // ── 1. Start MockServer ──────────────────────────────────────────────────
@@ -146,22 +173,38 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
     };
 
     let resp = builder.send().await.context("trigger request failed")?;
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
+    let actual_status = resp.status().as_u16();
+    let actual_body = resp.text().await.unwrap_or_default();
 
     let _ = crate::audit::log(&crate::audit::AuditEvent::ReplayComplete {
         snapshot: &args.snapshot.to_string_lossy(),
-        status_code: status.as_u16(),
+        status_code: actual_status,
     });
 
-    println!();
-    println!("── Replay result ──────────────────────────────────────────");
-    println!("  status: {status}");
-    println!("  body:   {}", truncate(&body, 300));
-    println!("───────────────────────────────────────────────────────────");
-
-    // Clean up temporary override file.
+    // Clean up temporary override file before potentially exiting with code 1.
     let _ = std::fs::remove_file(&override_path);
+
+    if args.no_diff {
+        println!();
+        println!("── Replay result ──────────────────────────────────────────");
+        println!("  status: {actual_status}");
+        println!("  body:   {}", truncate(&actual_body, 300));
+        println!("───────────────────────────────────────────────────────────");
+        return Ok(());
+    }
+
+    let outcome = diff::compare(
+        recorded_response.as_ref().and_then(|r| r.status_code),
+        recorded_response.as_ref().and_then(|r| r.body.as_deref()),
+        actual_status,
+        &actual_body,
+    );
+
+    diff::print_outcome(&outcome);
+
+    if !outcome.is_match() {
+        anyhow::bail!("replay diverged from recorded response");
+    }
 
     Ok(())
 }
