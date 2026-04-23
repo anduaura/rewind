@@ -33,14 +33,15 @@ pub enum SyscallKind {
 #[repr(C)]
 pub struct HttpEvent {
     pub timestamp_ns: u64,
-    pub body_len: u32,
+    pub body_len: u32,         // bytes captured in body_raw (0 if not captured)
     pub pid: u32,
-    pub status_code: u16, // 0 for requests
+    pub status_code: u16,      // 0 for requests
     pub direction: Direction,
     pub _pad: u8,
-    pub method: [u8; 8],      // e.g. b"GET\0\0\0\0\0"
+    pub method: [u8; 8],       // e.g. b"GET\0\0\0\0\0"
     pub path: [u8; 128],
     pub headers_raw: [u8; 128], // bytes immediately after the request line (\r\n)
+    pub body_raw: [u8; 128],    // bytes after \r\n\r\n header separator (if body_len > 0)
 }
 
 /// Emitted by the sys_exit tracepoint for clock_gettime and getrandom.
