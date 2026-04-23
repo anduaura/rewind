@@ -156,6 +156,10 @@ pub struct ReplayArgs {
     /// Decryption passphrase for encrypted snapshots (overrides REWIND_SNAPSHOT_KEY)
     #[arg(long, env = "REWIND_SNAPSHOT_KEY")]
     pub key: Option<String>,
+
+    /// Skip response comparison (just run the replay, do not diff)
+    #[arg(long)]
+    pub no_diff: bool,
 }
 
 #[derive(Args)]
