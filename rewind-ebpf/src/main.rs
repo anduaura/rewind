@@ -15,6 +15,10 @@
 #![no_std]
 #![no_main]
 
+mod vmlinux;
+
+use core::ptr::addr_of;
+
 use aya_ebpf::{
     helpers::{
         bpf_get_current_pid_tgid, bpf_ktime_get_ns, bpf_probe_read_kernel,
@@ -64,21 +68,27 @@ fn try_capture_send(ctx: ProbeContext) -> Result<(), i64> {
         return Ok(());
     }
 
-    // Navigate msghdr → iov_iter → iovec[0].iov_base.
-    // Layout (x86_64, Linux 5.14+):
-    //   msghdr.msg_iter @ +16, iov_iter.iov @ iov_iter+24 → msghdr+40
-    //   iovec[0].iov_base @ iov+0, iovec[0].iov_len @ iov+8
+    // Navigate msghdr → iov_iter → iovec[0].iov_base using CO-RE typed field access.
+    // addr_of! takes the field address from the struct definition in vmlinux.rs;
+    // the BPF loader patches these offsets against the running kernel's BTF at load time.
+    let msg_ptr = msg as *const vmlinux::msghdr;
     let iov: u64 = unsafe {
-        bpf_probe_read_kernel((msg + 40) as *const u64).map_err(|e| e as i64)?
+        bpf_probe_read_kernel(
+            addr_of!((*msg_ptr).msg_iter.iov) as *const u64,
+        )
+        .map_err(|e| e as i64)?
     };
     if iov == 0 {
         return Ok(());
     }
+    let iov_p = iov as *const vmlinux::iovec;
     let iov_base: u64 = unsafe {
-        bpf_probe_read_kernel(iov as *const u64).map_err(|e| e as i64)?
+        bpf_probe_read_kernel(addr_of!((*iov_p).iov_base) as *const u64)
+            .map_err(|e| e as i64)?
     };
     let iov_len: u64 = unsafe {
-        bpf_probe_read_kernel((iov + 8) as *const u64).map_err(|e| e as i64)?
+        bpf_probe_read_kernel(addr_of!((*iov_p).iov_len) as *const u64)
+            .map_err(|e| e as i64)?
     };
     if iov_base == 0 || iov_len == 0 {
         return Ok(());
@@ -126,10 +136,14 @@ fn try_capture_send(ctx: ProbeContext) -> Result<(), i64> {
     }
 
     // ── DB protocols ─────────────────────────────────────────────────────────
-    // Read destination port from sock->sk_common.skc_dport (big-endian, offset 12).
+    // Read destination port via CO-RE typed field access (skc_dport is big-endian).
     if sk != 0 {
+        let sk_ptr = sk as *const vmlinux::sock;
         let dport_be: u16 = unsafe {
-            bpf_probe_read_kernel((sk + 12) as *const u16).map_err(|e| e as i64)?
+            bpf_probe_read_kernel(
+                addr_of!((*sk_ptr).__sk_common.skc_dport) as *const u16,
+            )
+            .map_err(|e| e as i64)?
         };
         let dport = u16::from_be(dport_be);
 
@@ -325,18 +339,25 @@ fn try_capture_recv(ctx: ProbeContext) -> Result<(), i64> {
         return Ok(());
     }
 
-    // Read the iov from the (now-filled) msghdr.
+    // Read the iov from the (now-filled) msghdr via CO-RE typed field access.
+    let msg_ptr = msg as *const vmlinux::msghdr;
     let iov: u64 = unsafe {
-        bpf_probe_read_kernel((msg + 40) as *const u64).map_err(|e| e as i64)?
+        bpf_probe_read_kernel(
+            addr_of!((*msg_ptr).msg_iter.iov) as *const u64,
+        )
+        .map_err(|e| e as i64)?
     };
     if iov == 0 {
         return Ok(());
     }
+    let iov_p = iov as *const vmlinux::iovec;
     let iov_base: u64 = unsafe {
-        bpf_probe_read_kernel(iov as *const u64).map_err(|e| e as i64)?
+        bpf_probe_read_kernel(addr_of!((*iov_p).iov_base) as *const u64)
+            .map_err(|e| e as i64)?
     };
     let iov_len: u64 = unsafe {
-        bpf_probe_read_kernel((iov + 8) as *const u64).map_err(|e| e as i64)?
+        bpf_probe_read_kernel(addr_of!((*iov_p).iov_len) as *const u64)
+            .map_err(|e| e as i64)?
     };
     if iov_base == 0 || iov_len == 0 {
         return Ok(());
