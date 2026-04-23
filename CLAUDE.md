@@ -145,7 +145,22 @@ Three crates in the repo:
 | 62 | Service attribution — `ServiceMap` resolves PIDs to service names via `docker inspect` + `/proc/<pid>/cgroup` (v1 and v2); all event parsers populate `service` field; cached per-PID | Done |
 | 63 | `rewind diff` — compare two `.rwd` snapshots without running a replay; DB response, HTTP status+body, syscall return, and timing drift detection; JSON output; exits 1 on divergence | Done |
 
-## Enterprise readiness goal
+## Enterprise readiness gaps
+
+Honest assessment of what blocks enterprise adoption, ordered by impact. Work through these one by one.
+
+| # | Gap | Layer | Status | Notes |
+|---|-----|-------|--------|-------|
+| E1 | **eBPF CO-RE / BTF** — probes hardcode struct offsets for x86_64 Linux 5.14+; will silently produce garbage or crash on EKS 1.27, GKE 1.28, ARM nodes. Need BTF-aware field access (`bpf_core_read!`) so offsets are resolved at load time against the running kernel. | eBPF capture | Pending | Highest leverage; unblocks all Kubernetes deployments |
+| E2 | **Replay libfaketime constraint** — `rewind replay` requires libfaketime to be pre-installed in every container image. Almost no production image has this. Need an alternative clock-override strategy (ptrace, seccomp, or LD_PRELOAD injection at start without image modification). | Replay | Pending | Hard constraint that prevents any customer from using replay out-of-the-box |
+| E3 | **128-byte body truncation** — eBPF copies at most 128 bytes of HTTP body. GraphQL queries, large JSON payloads, and gRPC proto bodies are silently truncated. Need a userspace follow-up read (via `/proc/<pid>/fd`) or increased per-CPU map buffer. | eBPF capture | Pending | Silent data loss; developers won't trust body replay |
+| E4 | **Service attribution in Kubernetes** — `ServiceMap` uses `docker inspect` which doesn't work in Kubernetes pods. Need cgroup v2 path parsing for k8s (`/sys/fs/cgroup/kubepods/...`) and Pod → service name resolution via the Downward API or the kubelet API. | Capture agent | Pending | All events show `service: ""` on Kubernetes; breaks timeline/report |
+| E5 | **No load / scale validation** — collection server has never served production traffic; no load test, no chaos test, no proven shared-storage backend under concurrent writes. | Collection server | Pending | Enterprise buyers require load test results |
+| E6 | **No third-party security audit** — encryption, RBAC, HMAC validation are implemented but unaudited. SOC 2 / ISO 27001 customers require a penetration test or third-party review. | Security | Pending | Sales blocker for regulated industries |
+| E7 | **SaaS web UI is missing** — milestone 35 is marked Done but no browser-based UI exists; the collection server has API endpoints but no snapshot browsing, timeline visualisation, or team management UI. | Developer experience | Pending | Required for the commercial offering |
+| E8 | **No getting-started documentation** — no user guide, no API reference, no Kubernetes quickstart aimed at a non-contributor engineer. | Documentation | Pending | Adoption blocker; engineers won't evaluate what they can't run |
+
+
 
 The long-term goal is for rewind to be the standard incident replay tool at companies running Kubernetes in regulated industries (finance, healthcare, SaaS). That requires:
 
