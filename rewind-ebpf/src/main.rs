@@ -186,6 +186,7 @@ fn emit_http_event(ctx: &ProbeContext, data: &[u8; 256], is_response: bool) {
         method: [0u8; 8],
         path: [0u8; 128],
         headers_raw: [0u8; 128],
+        body_raw: [0u8; 128],
     };
 
     if !is_response {
@@ -208,8 +209,7 @@ fn emit_http_event(ctx: &ProbeContext, data: &[u8; 256], is_response: bool) {
             j += 1;
         }
 
-        // Find end of request line and capture first 128 bytes of headers.
-        // Scan for \r\n (end of "METHOD /path HTTP/1.x\r\n").
+        // Find end of request line (\r\n) and capture first 128 bytes of headers.
         let mut line_end = 0usize;
         while line_end < 200 {
             if data[line_end] == b'\r' && data[line_end + 1] == b'\n' {
@@ -234,6 +234,34 @@ fn emit_http_event(ctx: &ProbeContext, data: &[u8; 256], is_response: bool) {
             event.status_code = s;
         }
         event.method.copy_from_slice(b"HTTP    ");
+    }
+
+    // Find \r\n\r\n (end of headers) and capture up to 128 bytes of body.
+    // This populates body_raw regardless of direction; userspace decides whether
+    // to store it based on the --capture-bodies flag.
+    let mut sep = 0usize;
+    while sep + 3 < 256 {
+        if data[sep] == b'\r'
+            && data[sep + 1] == b'\n'
+            && data[sep + 2] == b'\r'
+            && data[sep + 3] == b'\n'
+        {
+            sep += 4;
+            break;
+        }
+        sep += 1;
+    }
+    if sep < 256 {
+        let body_bytes = 256 - sep;
+        if body_bytes > 0 {
+            let copy_len = body_bytes.min(128);
+            event.body_len = copy_len as u32;
+            let mut k = 0usize;
+            while k < copy_len {
+                event.body_raw[k] = data[sep + k];
+                k += 1;
+            }
+        }
     }
 
     unsafe { HTTP_EVENTS.output(ctx, &event, 0) };

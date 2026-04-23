@@ -92,10 +92,16 @@ async fn handle_request(State(state): State<MockState>, req: Request) -> Respons
     match record {
         Some(r) => {
             let status = r.status_code.unwrap_or(200);
+            let content_type = r
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| "application/json".to_string());
             let body = r.body.unwrap_or_default();
             Response::builder()
                 .status(status)
-                .header("content-type", "application/json")
+                .header("content-type", content_type)
                 .body(axum::body::Body::from(body))
                 .unwrap_or_else(|_| internal_error())
         }

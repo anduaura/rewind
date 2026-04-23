@@ -106,6 +106,7 @@ pub async fn run(args: RecordArgs) -> Result<()> {
         Arc::clone(&ring),
         Arc::clone(&metrics),
         Arc::clone(&scrub),
+        args.capture_bodies,
     )?;
     let syscall_task = spawn_syscall_drain(&mut bpf, Arc::clone(&ring), Arc::clone(&metrics))?;
     let db_task = spawn_db_drain(
@@ -293,9 +294,10 @@ fn spawn_http_drain(
     ring: Arc<Mutex<RingBuffer>>,
     metrics: Arc<Metrics>,
     scrub: Arc<ScrubConfig>,
+    capture_bodies: bool,
 ) -> Result<tokio::task::JoinHandle<()>> {
     drain_perf_array(bpf, "HTTP_EVENTS", 1024, ring, move |buf| {
-        let mut record = parse_http_event(buf)?;
+        let mut record = parse_http_event(buf, capture_bodies)?;
         scrub.scrub_headers(&mut record.headers);
         if !scrub.path_allowed(&record.path) {
             anyhow::bail!("path not in allow-list");
@@ -456,11 +458,21 @@ fn parse_raw_headers(raw: &[u8; 128]) -> Vec<(String, String)> {
     headers
 }
 
-fn parse_http_event(buf: &BytesMut) -> Result<HttpRecord> {
+fn parse_http_event(buf: &BytesMut, capture_bodies: bool) -> Result<HttpRecord> {
     if buf.len() < std::mem::size_of::<HttpEvent>() {
         anyhow::bail!("buffer too small for HttpEvent");
     }
     let raw: HttpEvent = unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const HttpEvent) };
+
+    let body = if capture_bodies && raw.body_len > 0 {
+        let len = (raw.body_len as usize).min(128);
+        let body_str = String::from_utf8_lossy(&raw.body_raw[..len]).into_owned();
+        // Trim trailing null bytes that pad the fixed-size buffer.
+        let trimmed = body_str.trim_end_matches('\0').to_string();
+        if trimmed.is_empty() { None } else { Some(trimmed) }
+    } else {
+        None
+    };
 
     Ok(HttpRecord {
         timestamp_ns: raw.timestamp_ns,
@@ -478,7 +490,7 @@ fn parse_http_event(buf: &BytesMut) -> Result<HttpRecord> {
         },
         service: String::new(),
         trace_id: extract_traceparent(&raw.headers_raw),
-        body: None,
+        body,
         headers: parse_raw_headers(&raw.headers_raw),
     })
 }
@@ -1331,6 +1343,79 @@ mod tests {
     fn traceparent_missing() {
         let h = make_headers("content-type: application/json\r\n");
         assert_eq!(extract_traceparent(&h), None);
+    }
+
+    // ── parse_http_event body capture ─────────────────────────────────────────
+
+    fn make_http_event_buf(
+        method_str: &[u8],
+        path_str: &[u8],
+        body_str: &[u8],
+        capture_body: bool,
+    ) -> bytes::BytesMut {
+        let mut method = [0u8; 8];
+        let ml = method_str.len().min(8);
+        method[..ml].copy_from_slice(&method_str[..ml]);
+
+        let mut path = [0u8; 128];
+        let pl = path_str.len().min(128);
+        path[..pl].copy_from_slice(&path_str[..pl]);
+
+        let mut body_raw = [0u8; 128];
+        let bl = body_str.len().min(128);
+        body_raw[..bl].copy_from_slice(&body_str[..bl]);
+        let body_len = if capture_body { bl as u32 } else { 0 };
+
+        let event = rewind_common::HttpEvent {
+            timestamp_ns: 1_000_000,
+            body_len,
+            pid: 1,
+            status_code: 0,
+            direction: rewind_common::Direction::Outbound,
+            _pad: 0,
+            method,
+            path,
+            headers_raw: [0u8; 128],
+            body_raw,
+        };
+        let raw = unsafe {
+            std::slice::from_raw_parts(
+                &event as *const rewind_common::HttpEvent as *const u8,
+                std::mem::size_of::<rewind_common::HttpEvent>(),
+            )
+        };
+        bytes::BytesMut::from(raw)
+    }
+
+    #[test]
+    fn body_captured_when_flag_set() {
+        let buf = make_http_event_buf(b"POST", b"/checkout", b"{\"amount\":100}", true);
+        let record = parse_http_event(&buf, true).unwrap();
+        assert_eq!(record.body, Some("{\"amount\":100}".to_string()));
+        assert_eq!(record.method, "POST");
+        assert_eq!(record.path, "/checkout");
+    }
+
+    #[test]
+    fn body_suppressed_when_flag_unset() {
+        let buf = make_http_event_buf(b"POST", b"/checkout", b"{\"amount\":100}", true);
+        let record = parse_http_event(&buf, false).unwrap();
+        assert_eq!(record.body, None);
+    }
+
+    #[test]
+    fn body_none_when_body_len_zero() {
+        let buf = make_http_event_buf(b"GET", b"/health", b"", false);
+        let record = parse_http_event(&buf, true).unwrap();
+        assert_eq!(record.body, None);
+    }
+
+    #[test]
+    fn body_null_bytes_trimmed() {
+        // body_raw is zero-padded; trailing nulls should be stripped
+        let buf = make_http_event_buf(b"POST", b"/api", b"hi", true);
+        let record = parse_http_event(&buf, true).unwrap();
+        assert_eq!(record.body, Some("hi".to_string()));
     }
 
     // ── parse_postgres_query ──────────────────────────────────────────────────
