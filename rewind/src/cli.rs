@@ -160,6 +160,12 @@ pub struct ReplayArgs {
     /// Skip response comparison (just run the replay, do not diff)
     #[arg(long)]
     pub no_diff: bool,
+
+    /// Skip clock override entirely — do not inject FAKETIME / LD_PRELOAD into
+    /// containers. Use when libfaketime is unavailable on the host or when
+    /// the incident does not depend on wall-clock time.
+    #[arg(long)]
+    pub no_faketime: bool,
 }
 
 #[derive(Args)]

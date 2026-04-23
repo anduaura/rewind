@@ -25,6 +25,19 @@ use crate::replay::diff;
 use crate::replay::network::MockServer;
 use crate::store::snapshot::{Event, HttpRecord, Snapshot};
 
+/// Host paths where libfaketime may be installed, tried in order.
+const FAKETIME_CANDIDATES: &[&str] = &[
+    "/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1",
+    "/usr/lib/aarch64-linux-gnu/faketime/libfaketime.so.1",
+    "/usr/lib/arm-linux-gnueabihf/faketime/libfaketime.so.1",
+    "/usr/local/lib/faketime/libfaketime.so.1",
+    "/usr/lib/faketime/libfaketime.so.1",
+    "/usr/local/lib/libfaketime.so.1",
+];
+
+/// Mount point for libfaketime inside each replay container.
+const CONTAINER_FAKETIME_PATH: &str = "/run/rewind/libfaketime.so.1";
+
 pub async fn run(args: ReplayArgs) -> Result<()> {
     let key = crypto::resolve_key(args.key);
     let snapshot = Snapshot::read(&args.snapshot, key.as_deref())?;
@@ -114,15 +127,38 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
 
     // ── 2. Clock override ────────────────────────────────────────────────────
     //
-    // libfaketime reads FAKETIME from the environment. We inject it into every
-    // container via a docker-compose override file so the replay services see
-    // the same wall clock as during recording.
+    // Strategy: detect libfaketime on the host and volume-mount it into every
+    // container via the compose override.  No image changes required — the .so
+    // travels from the host into the container at start time.
+    //
+    // If libfaketime is absent on the host (or --no-faketime is set) we skip
+    // the clock override and replay with the real wall clock.  Most incidents
+    // can still be reproduced; only time-sensitive bugs require exact clock.
     let faketime = ns_to_faketime(snapshot.recorded_at_ns);
-    println!("  clock:    {faketime}");
+    let host_faketime_path: Option<&str> = if args.no_faketime {
+        println!("  clock:    disabled (--no-faketime)");
+        None
+    } else {
+        match find_libfaketime() {
+            Some(p) => {
+                println!("  clock:    {faketime}  (libfaketime from {p})");
+                Some(p)
+            }
+            None => {
+                println!(
+                    "  clock:    skipped — libfaketime not found on host. \
+                     Install with: sudo apt install faketime  \
+                     or pass --no-faketime to suppress this warning."
+                );
+                None
+            }
+        }
+    };
 
     // ── 3. Write compose override ────────────────────────────────────────────
-    let override_path = write_compose_override(&args.compose, &faketime, &mock_proxy)
-        .context("failed to write docker-compose override")?;
+    let override_path =
+        write_compose_override(&args.compose, &faketime, host_faketime_path, &mock_proxy)
+            .context("failed to write docker-compose override")?;
 
     // ── 4. Bring up services ─────────────────────────────────────────────────
     println!("Starting services…");
@@ -224,10 +260,18 @@ fn ns_to_faketime(ns: u64) -> String {
     format!("@{}", dt.format("%Y-%m-%d %H:%M:%S"))
 }
 
-/// Write a docker-compose override that injects FAKETIME + HTTP_PROXY into
-/// every service so they use the recorded clock and route outbound HTTP through
-/// MockServer. libfaketime must be installed in the container images.
-fn write_compose_override(compose: &Path, faketime: &str, mock_proxy: &str) -> Result<PathBuf> {
+/// Write a docker-compose override that injects HTTP_PROXY (and optionally
+/// FAKETIME + LD_PRELOAD) into every service.
+///
+/// When `host_faketime_path` is `Some(path)` the host `.so` is volume-mounted
+/// read-only into each container at `CONTAINER_FAKETIME_PATH` and LD_PRELOAD
+/// is set to that path.  No image changes are required.
+fn write_compose_override(
+    compose: &Path,
+    faketime: &str,
+    host_faketime_path: Option<&str>,
+    mock_proxy: &str,
+) -> Result<PathBuf> {
     let compose_str = std::fs::read_to_string(compose)
         .with_context(|| format!("cannot read {}", compose.display()))?;
     let doc: serde_yaml::Value = serde_yaml::from_str(&compose_str)?;
@@ -243,35 +287,33 @@ fn write_compose_override(compose: &Path, faketime: &str, mock_proxy: &str) -> R
 
     let mut services_map = serde_yaml::Mapping::new();
     for name in &service_names {
-        let env = serde_yaml::Value::Mapping({
-            let mut m = serde_yaml::Mapping::new();
-            let kv = [
-                ("FAKETIME", faketime),
-                // libfaketime intercepts clock calls via LD_PRELOAD.
-                // The path is the standard Debian/Ubuntu location.
-                (
-                    "LD_PRELOAD",
-                    "/usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1",
-                ),
-                ("HTTP_PROXY", mock_proxy),
-                ("HTTPS_PROXY", mock_proxy),
-                // Exclude localhost from the proxy so intra-host calls still work.
-                ("NO_PROXY", "127.0.0.1,localhost"),
-            ];
-            for (k, v) in kv {
-                m.insert(sv(k), sv(v));
-            }
-            m
-        });
+        let mut env_map = serde_yaml::Mapping::new();
 
-        services_map.insert(
-            sv(name),
-            serde_yaml::Value::Mapping({
-                let mut m = serde_yaml::Mapping::new();
-                m.insert(sv("environment"), env);
-                m
-            }),
-        );
+        if let Some(host_path) = host_faketime_path {
+            env_map.insert(sv("FAKETIME"), sv(faketime));
+            // LD_PRELOAD points to the container-side mount path, not the host path.
+            env_map.insert(sv("LD_PRELOAD"), sv(CONTAINER_FAKETIME_PATH));
+            let _ = host_path; // captured in the volume entry below
+        }
+
+        env_map.insert(sv("HTTP_PROXY"), sv(mock_proxy));
+        env_map.insert(sv("HTTPS_PROXY"), sv(mock_proxy));
+        env_map.insert(sv("NO_PROXY"), sv("127.0.0.1,localhost"));
+
+        let mut svc_map = serde_yaml::Mapping::new();
+        svc_map.insert(sv("environment"), serde_yaml::Value::Mapping(env_map));
+
+        if let Some(host_path) = host_faketime_path {
+            // Volume-mount the host libfaketime.so read-only into the container.
+            // Format: "HOST_PATH:CONTAINER_PATH:ro"
+            let vol = format!("{host_path}:{CONTAINER_FAKETIME_PATH}:ro");
+            svc_map.insert(
+                sv("volumes"),
+                serde_yaml::Value::Sequence(vec![sv(&vol)]),
+            );
+        }
+
+        services_map.insert(sv(name), serde_yaml::Value::Mapping(svc_map));
     }
 
     let override_doc = serde_yaml::Value::Mapping({
@@ -287,6 +329,14 @@ fn write_compose_override(compose: &Path, faketime: &str, mock_proxy: &str) -> R
 
     std::fs::write(&override_path, serde_yaml::to_string(&override_doc)?)?;
     Ok(override_path)
+}
+
+/// Return the first libfaketime path found on the host, or `None`.
+fn find_libfaketime() -> Option<&'static str> {
+    FAKETIME_CANDIDATES
+        .iter()
+        .copied()
+        .find(|p| std::path::Path::new(p).exists())
 }
 
 fn sv(s: &str) -> serde_yaml::Value {
