@@ -492,6 +492,126 @@ fn server_write_only_token_cannot_list() {
     assert_eq!(upload_status, 403, "read-only token should not upload (403)");
 }
 
+// ── Concurrent-upload correctness ─────────────────────────────────────────────
+
+/// Smoke test: N threads each upload a distinct snapshot concurrently.
+/// All uploads must succeed and the list must reflect every snapshot.
+#[test]
+fn concurrent_uploads_all_succeed() {
+    const N: usize = 20;
+
+    let dir = tempfile::tempdir().unwrap();
+    let port = free_port();
+    // Rate-limit disabled so all N concurrent uploads go through.
+    let child = Command::new(rewind_bin())
+        .args([
+            "server",
+            "--listen",
+            &format!("127.0.0.1:{port}"),
+            "--storage",
+            dir.path().to_str().unwrap(),
+            "--token",
+            "test-token",
+            "--rate-limit",
+            "0",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn server");
+    let _srv = ServerGuard(child);
+    wait_for_port(port);
+
+    let base = format!("http://127.0.0.1:{port}");
+    let data = std::fs::read(fixture("sample.rwd")).unwrap();
+    let data = Arc::new(data);
+
+    // Fire N uploads in parallel threads.
+    let handles: Vec<_> = (0..N)
+        .map(|i| {
+            let url = base.clone();
+            let body = Arc::clone(&data);
+            std::thread::spawn(move || {
+                let name = format!("concurrent-{i:03}.rwd");
+                let status = ureq_post_bytes_named(
+                    &format!("{url}/snapshots"),
+                    "test-token",
+                    &body,
+                    &name,
+                );
+                assert!(
+                    status == 201,
+                    "concurrent upload {i} expected 201 got {status}"
+                );
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join().expect("upload thread panicked");
+    }
+
+    // Verify all N snapshots are visible in the list.
+    let body = ureq_get_string(&format!("{base}/snapshots"), "test-token");
+    let list: Vec<serde_json::Value> =
+        serde_json::from_str(&body).expect("list response is JSON");
+    assert_eq!(
+        list.len(),
+        N,
+        "expected {N} snapshots in list, got {}",
+        list.len()
+    );
+}
+
+/// Rate-limit smoke test: uploading well beyond the per-minute cap from one
+/// IP should eventually yield 429 responses.
+#[test]
+fn rate_limit_triggers_429() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = free_port();
+    // Start server with a very low rate limit (3 uploads/min).
+    let child = Command::new(rewind_bin())
+        .args([
+            "server",
+            "--listen",
+            &format!("127.0.0.1:{port}"),
+            "--storage",
+            dir.path().to_str().unwrap(),
+            "--token",
+            "tok",
+            "--rate-limit",
+            "3",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn server");
+    let _srv = ServerGuard(child);
+    wait_for_port(port);
+
+    let base = format!("http://127.0.0.1:{port}");
+    let data = std::fs::read(fixture("sample.rwd")).unwrap();
+
+    // Fire 10 uploads; at least one must be rate-limited.
+    let statuses: Vec<u16> = (0..10)
+        .map(|i| {
+            ureq_post_bytes_named(
+                &format!("{base}/snapshots"),
+                "tok",
+                &data,
+                &format!("rl-{i:02}.rwd"),
+            )
+        })
+        .collect();
+
+    assert!(
+        statuses.iter().any(|&s| s == 429),
+        "expected at least one 429 with rate-limit=3; got {statuses:?}"
+    );
+}
+
+use std::sync::Arc;
+
 // ── Low-level HTTP helpers (no async runtime needed) ──────────────────────────
 
 /// Send a raw HTTP/1.0 request and return (status_code, body_bytes).
