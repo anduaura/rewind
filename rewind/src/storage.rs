@@ -191,6 +191,25 @@ impl Backend {
         }
     }
 
+    /// Delete snapshot `{team}/{name}`.
+    pub async fn delete(&self, team: &str, name: &str) -> Result<()> {
+        match self {
+            Self::Local(root) => {
+                tokio::fs::remove_file(root.join(team).join(name))
+                    .await
+                    .with_context(|| format!("deleting {team}/{name}"))?;
+            }
+            Self::Remote { store, prefix } => {
+                let key = obj_key(prefix, team, name);
+                store
+                    .delete(&key)
+                    .await
+                    .with_context(|| format!("deleting {key}"))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Try to claim (or refresh) the leader lock.
     /// Returns `true` if this instance is the leader after the call.
     pub async fn try_become_leader(&self, instance_id: &str) -> bool {

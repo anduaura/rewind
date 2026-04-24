@@ -32,8 +32,8 @@ use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Json},
-    routing::{get, post},
+    response::{Html, IntoResponse, Json, Redirect},
+    routing::{delete, get, post},
     Router,
 };
 use serde::Serialize;
@@ -357,9 +357,11 @@ pub async fn run(args: ServerArgs) -> Result<()> {
         .route("/snapshots", post(upload_snapshot))
         .route("/snapshots", get(list_snapshots))
         .route("/snapshots/:name", get(download_snapshot))
+        .route("/snapshots/:name", delete(api_delete_snapshot))
         .route("/snapshots/:name/share", post(create_share_link))
         .route("/ui", get(ui_dashboard))
         .route("/ui/:name", get(ui_snapshot_detail))
+        .route("/ui/:name/delete", post(ui_delete_snapshot))
         .route("/share/:token", get(download_shared))
         .layer(body_limit)
         .with_state(state.clone());
@@ -629,35 +631,57 @@ async fn ui_dashboard(
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let qt = params.get("token").map_or("", |s| s.as_str());
-    let team = match resolve_team_ui(&state, &headers, qt).await {
-        Some(t) => t,
-        None => {
-            return Html(ui_page(
-                "unauthorized",
-                "<p>Append <code>?token=&lt;tok&gt;</code> to the URL.</p>",
-            ))
-            .into_response()
+    let access = match resolve_team_with_qt(&state, &headers, qt).await {
+        Some(a) if a.perm.can_read() => a,
+        _ => {
+            return Html(ui_shell(
+                "rewind — unauthorized", "", "",
+                r#"<div class="empty">
+                  <p style="font-size:16px;font-weight:600;margin-bottom:8px">Authentication required</p>
+                  <p>Append <code>?token=&lt;tok&gt;</code> to the URL or provide an <code>Authorization: Bearer</code> header.</p>
+                </div>"#,
+                "",
+            )).into_response();
         }
     };
+    let team = access.team;
+    let tqs = if qt.is_empty() { String::new() } else { format!("?token={qt}") };
+
+    let mut entries = state.backend.list(&team).await.unwrap_or_default();
+    entries.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+    let total_kb: u64 = entries.iter().map(|(_, sz)| sz).sum::<u64>() / 1024;
+    let count = entries.len();
 
     let mut rows = String::new();
-    {
-        let mut entries = state.backend.list(&team).await.unwrap_or_default();
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
-        let tqs = if qt.is_empty() {
-            String::new()
-        } else {
-            format!("?token={qt}")
-        };
-        for (name, sz) in &entries {
-            rows.push_str(&format!(
-                "<tr><td><a href=\"/ui/{name}{tqs}\">{name}</a></td><td>{} KB</td><td><a href=\"/share/{name}{tqs}\">detail</a></td></tr>",
-                sz / 1024
-            ));
-        }
+    for (name, sz) in &entries {
+        let kb = sz / 1024;
+        let name_esc = esc(name);
+        let name_lower = name.to_lowercase();
+        rows.push_str(&format!(
+            r#"<tr data-text="{name_lower}"><td class="mono-cell"><a href="/ui/{name_esc}{tqs}">{name_esc}</a></td><td class="muted">{kb} KB</td><td><a class="btn btn-secondary btn-sm" href="/ui/{name_esc}{tqs}">Inspect</a> <a class="btn btn-secondary btn-sm" href="/snapshots/{name_esc}{tqs}" download>⬇</a></td></tr>"#
+        ));
     }
-    let body = format!("<h2>Team: {team}</h2><table border=1 cellpadding=6><tr><th>Snapshot</th><th>Size</th><th>Actions</th></tr>{rows}</table>");
-    Html(ui_page(&format!("rewind — {team}"), &body)).into_response()
+    let empty = if entries.is_empty() {
+        r#"<tr><td colspan="3" class="empty">No snapshots yet.</td></tr>"#
+    } else { "" };
+
+    let team_esc = esc(&team);
+    let body = format!(r#"<h1 class="page-title">Snapshots</h1>
+<p class="page-sub">Team: <strong>{team_esc}</strong> &middot; {count} snapshots &middot; {total_kb} KB total</p>
+<div class="cards">
+  <div class="card"><div class="card-label">Snapshots</div><div class="card-value">{count}</div></div>
+  <div class="card"><div class="card-label">Total size</div><div class="card-value">{total_kb} KB</div></div>
+</div>
+<div class="toolbar">
+  <input class="filter-input" id="snap-filter" type="text" placeholder="Filter snapshots…" oninput="filterTable(this,'snap-table')">
+</div>
+<div class="table-wrap">
+  <table id="snap-table">
+    <thead><tr><th>Name</th><th>Size</th><th>Actions</th></tr></thead>
+    <tbody>{rows}{empty}</tbody>
+  </table>
+</div>"#);
+    Html(ui_shell(&format!("rewind — {team_esc}"), &team, &tqs, &body, "")).into_response()
 }
 
 async fn ui_snapshot_detail(
@@ -667,84 +691,202 @@ async fn ui_snapshot_detail(
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let qt = params.get("token").map_or("", |s| s.as_str());
-    let team = match resolve_team_ui(&state, &headers, qt).await {
-        Some(t) => t,
-        None => return Html(ui_page("unauthorized", "<p>Unauthorized.</p>")).into_response(),
+    let access = match resolve_team_with_qt(&state, &headers, qt).await {
+        Some(a) if a.perm.can_read() => a,
+        _ => return Html(ui_shell("unauthorized", "", "", "<p>Unauthorized.</p>", "")).into_response(),
     };
+    let team = access.team.clone();
+    let is_admin = access.perm == Permission::Admin;
+    let tqs = if qt.is_empty() { String::new() } else { format!("?token={qt}") };
+
     if !is_safe_filename(&name) {
-        return Html(ui_page("error", "<p>Invalid snapshot name.</p>")).into_response();
+        return Html(ui_shell("error", &team, &tqs, "<p>Invalid snapshot name.</p>", "")).into_response();
     }
     let data = match state.backend.get(&team, &name).await {
         Ok(b) => b.to_vec(),
-        Err(_) => return Html(ui_page("not found", "<p>Snapshot not found.</p>")).into_response(),
+        Err(_) => return Html(ui_shell("not found", &team, &tqs, "<p>Snapshot not found.</p>", "")).into_response(),
     };
 
     let size_kb = data.len() / 1024;
-    let tqs = if qt.is_empty() {
-        String::new()
-    } else {
-        format!("?token={qt}")
+    let name_esc = esc(&name);
+    let back = format!(r#"<div class="breadcrumb"><a href="/ui{tqs}">← Snapshots</a></div>"#);
+
+    if crate::crypto::is_encrypted(&data) {
+        let body = format!(r#"{back}<h1 class="page-title mono">{name_esc}</h1>
+<p class="page-sub">Encrypted snapshot &middot; {size_kb} KB</p>
+<p style="margin-top:16px;color:var(--muted)"><a href="/snapshots/{name_esc}{tqs}" download>Download</a> and inspect with <code>rewind inspect --key &lt;passphrase&gt;</code>.</p>"#);
+        return Html(ui_shell(&format!("rewind — {name_esc}"), &team, &tqs, &body, "")).into_response();
+    }
+
+    use crate::store::snapshot::Event;
+    let Ok(snap) = serde_json::from_slice::<crate::store::snapshot::Snapshot>(&data) else {
+        let body = format!(r#"{back}<h1 class="page-title mono">{name_esc}</h1>
+<p>Could not parse snapshot ({size_kb} KB). <a href="/snapshots/{name_esc}{tqs}" download>Download</a>.</p>"#);
+        return Html(ui_shell(&format!("rewind — {name_esc}"), &team, &tqs, &body, "")).into_response();
     };
 
-    let detail = if crate::crypto::is_encrypted(&data) {
-        format!("<p><b>Encrypted</b> snapshot ({size_kb} KB). <a href=\"/snapshots/{name}{tqs}\">Download</a> and decrypt with <code>rewind inspect --key</code>.</p>")
-    } else if let Ok(snap) = serde_json::from_slice::<crate::store::snapshot::Snapshot>(&data) {
-        let (mut http, mut db, mut grpc, mut sys) = (0usize, 0usize, 0usize, 0usize);
-        let mut rows = String::new();
-        use crate::store::snapshot::Event;
-        for (i, ev) in snap.events.iter().enumerate() {
-            if i < 50 {
-                let row = match ev {
-                    Event::Http(h) => {
-                        http += 1;
-                        format!(
-                            "<tr><td>{i}</td><td>HTTP</td><td>{} {} {:?}</td></tr>",
-                            h.method, h.path, h.status_code
-                        )
-                    }
-                    Event::Db(d) => {
-                        db += 1;
-                        format!("<tr><td>{i}</td><td>DB</td><td>{}</td></tr>", d.query)
-                    }
-                    Event::Grpc(g) => {
-                        grpc += 1;
-                        format!("<tr><td>{i}</td><td>gRPC</td><td>{}</td></tr>", g.path)
-                    }
-                    Event::Syscall(s) => {
-                        sys += 1;
-                        format!(
-                            "<tr><td>{i}</td><td>SYSCALL</td><td>{} → {}</td></tr>",
-                            s.kind, s.return_value
-                        )
-                    }
-                };
-                rows.push_str(&row);
-            } else {
-                match ev {
-                    Event::Http(_) => http += 1,
-                    Event::Db(_) => db += 1,
-                    Event::Grpc(_) => grpc += 1,
-                    Event::Syscall(_) => sys += 1,
-                }
+    let (mut http_cnt, mut db_cnt, mut grpc_cnt, mut sys_cnt) = (0usize, 0usize, 0usize, 0usize);
+    let recorded_at = format_ts_ns(snap.recorded_at_ns);
+    let services_esc = esc(&snap.services.join(", "));
+    let base_ts = snap.events.first().map(|e| ev_ts(e)).unwrap_or(0);
+
+    let mut ev_rows = String::new();
+    for (i, ev) in snap.events.iter().enumerate() {
+        let ts = ev_ts(ev);
+        let delta_ms = ts.saturating_sub(base_ts) / 1_000_000;
+        let (type_badge, service, detail, search_text) = match ev {
+            Event::Http(h) => {
+                http_cnt += 1;
+                let dir_cls = if h.direction == "inbound" { "badge-in" } else { "badge-out" };
+                let dir_lbl = if h.direction == "inbound" { "IN" } else { "OUT" };
+                let st = status_badge(h.status_code);
+                let d = format!(r#"<span class="badge {dir_cls}">{dir_lbl}</span> <span class="mono-cell">{} {}</span> {st}"#, esc(&h.method), esc(&h.path));
+                let s = format!("http {} {} {} {}", h.direction, h.method, h.path, h.status_code.map(|c|c.to_string()).unwrap_or_default());
+                (r#"<span class="badge badge-http">HTTP</span>"#.to_string(), esc(&h.service), d, s)
             }
-        }
-        let share_url = format!("/snapshots/{name}/share?token={qt}");
-        format!(
-            "<p>{size_kb} KB &nbsp;|&nbsp; services: {} &nbsp;|&nbsp; HTTP:{http} DB:{db} gRPC:{grpc} SYS:{sys}</p>\
-             <p><a href=\"/snapshots/{name}{tqs}\">⬇ Download</a> &nbsp; <a href=\"{share_url}\">🔗 Share (24h)</a></p>\
-             <table border=1 cellpadding=4><tr><th>#</th><th>Type</th><th>Detail</th></tr>{rows}</table>",
-            snap.services.join(", ")
-        )
-    } else {
-        format!("<p>Could not parse snapshot ({size_kb} KB). <a href=\"/snapshots/{name}{tqs}\">Download</a>.</p>")
-    };
+            Event::Db(d) => {
+                db_cnt += 1;
+                let proto_cls = if d.protocol == "redis" { "badge-teal" } else { "badge-db" };
+                let det = format!(r#"<span class="badge {proto_cls}">{}</span> <span class="mono-cell">{}</span>"#, esc(&d.protocol.to_uppercase()), esc(&d.query));
+                let s = format!("db {} {}", d.protocol, d.query);
+                (r#"<span class="badge badge-db">DB</span>"#.to_string(), esc(&d.service), det, s)
+            }
+            Event::Grpc(g) => {
+                grpc_cnt += 1;
+                let det = format!(r#"<span class="mono-cell">{}</span>"#, esc(&g.path));
+                let s = format!("grpc {}", g.path);
+                (r#"<span class="badge badge-grpc">gRPC</span>"#.to_string(), esc(&g.service), det, s)
+            }
+            Event::Syscall(s) => {
+                sys_cnt += 1;
+                let det = format!(r#"<span class="mono-cell">{}</span> <span class="muted">→ {}</span>"#, esc(&s.kind), s.return_value);
+                let sr = format!("syscall {} {}", s.kind, s.return_value);
+                (r#"<span class="badge badge-sys">SYS</span>"#.to_string(), String::new(), det, sr)
+            }
+        };
+        ev_rows.push_str(&format!(
+            r#"<tr data-text="{sl}"><td class="muted" style="width:42px">{i}</td><td style="width:70px">{type_badge}</td><td class="muted" style="width:90px">{service}</td><td>{detail}</td><td class="muted" style="width:70px;text-align:right">+{delta_ms}ms</td></tr>"#,
+            sl = esc(&search_text.to_lowercase()),
+        ));
+    }
 
-    let back = format!("<p><a href=\"/ui{tqs}\">← back</a></p>");
-    Html(ui_page(
-        &format!("rewind — {name}"),
-        &format!("{back}<h2>{name}</h2>{detail}"),
-    ))
-    .into_response()
+    let delete_btn = if is_admin {
+        format!(r#"<form method="post" action="/ui/{name}/delete{tqs}" style="display:inline" onsubmit="return confirm('Delete {name_esc}? This cannot be undone.')"><button type="submit" class="btn btn-danger">🗑 Delete</button></form>"#)
+    } else { String::new() };
+
+    let mermaid_src = crate::timeline::to_mermaid_inner(&snap);
+    let mermaid_js = js_str(&mermaid_src);
+    let has_diagram = !snap.events.is_empty();
+
+    let diagram_html = if has_diagram {
+        format!(r#"<div class="diagram-section">
+  <div class="section-title">Sequence Diagram <button class="copy-btn" onclick="copyMermaid()">Copy source</button></div>
+  <div class="diagram-wrap" id="diagram"><div style="color:var(--muted);font-size:12px">Loading diagram…</div></div>
+</div>"#)
+    } else { String::new() };
+
+    let scripts = if has_diagram {
+        format!(r#"<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({{startOnLoad:false,theme:'dark',securityLevel:'loose'}});
+const src = `{mermaid_js}`;
+window._mSrc = src;
+(async()=>{{
+  const el = document.getElementById('diagram');
+  if(!el) return;
+  try{{const {{svg}}=await mermaid.render('seq'+Date.now(),src);el.innerHTML=svg;el.querySelector('svg').style.maxWidth='100%';}}
+  catch(e){{el.innerHTML='<pre style="white-space:pre-wrap;font-size:11px;color:var(--muted)">'+src.replace(/</g,'&lt;')+'</pre>';}}
+}})();
+</script><script>function copyMermaid(){{navigator.clipboard.writeText(window._mSrc||'').then(()=>showToast('Copied!'));}}</script>"#)
+    } else { String::new() };
+
+    let body = format!(r#"{back}
+<h1 class="page-title mono">{name_esc}</h1>
+<p class="page-sub">Recorded {recorded_at} &middot; {services_esc} &middot; {size_kb} KB</p>
+<div class="cards">
+  <div class="card"><div class="card-label">HTTP</div><div class="card-value blue">{http_cnt}</div></div>
+  <div class="card"><div class="card-label">DB</div><div class="card-value purple">{db_cnt}</div></div>
+  <div class="card"><div class="card-label">gRPC</div><div class="card-value teal">{grpc_cnt}</div></div>
+  <div class="card"><div class="card-label">Syscall</div><div class="card-value gray">{sys_cnt}</div></div>
+</div>
+<div class="btn-group">
+  <a class="btn btn-primary" href="/snapshots/{name_esc}{tqs}" download>⬇ Download</a>
+  <button class="btn btn-secondary" id="share-btn" onclick="doShare()">🔗 Share (24h)</button>
+  {delete_btn}
+</div>
+<div class="toolbar">
+  <span class="section-title" style="margin:0">Events</span>
+  <input class="filter-input" id="ev-filter" type="text" placeholder="Filter events…" oninput="filterTable(this,'ev-table')">
+</div>
+<div class="table-wrap">
+  <table id="ev-table">
+    <thead><tr><th style="width:42px">#</th><th style="width:70px">Type</th><th style="width:90px">Service</th><th>Detail</th><th style="width:70px;text-align:right">Offset</th></tr></thead>
+    <tbody>{ev_rows}</tbody>
+  </table>
+</div>
+{diagram_html}
+<script>
+async function doShare(){{
+  const btn=document.getElementById('share-btn');
+  btn.disabled=true;btn.textContent='Generating…';
+  try{{
+    const r=await fetch('/snapshots/{name_esc}/share{tqs}',{{method:'POST',headers:{{accept:'application/json'}}}});
+    const d=await r.json();
+    prompt('Share link (valid 24 h):',location.origin+d.share_url);
+  }}catch(e){{showToast('Error: '+e.message);}}
+  finally{{btn.disabled=false;btn.textContent='🔗 Share (24h)';}}
+}}
+</script>"#);
+    Html(ui_shell(&format!("rewind — {name_esc}"), &team, &tqs, &body, &scripts)).into_response()
+}
+
+async fn ui_delete_snapshot(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let qt = params.get("token").map_or("", |s| s.as_str());
+    let tqs = if qt.is_empty() { String::new() } else { format!("?token={qt}") };
+    let access = match resolve_team_with_qt(&state, &headers, qt).await {
+        Some(a) => a,
+        None => return (StatusCode::UNAUTHORIZED, "unauthorized\n").into_response(),
+    };
+    if access.perm != Permission::Admin {
+        return (StatusCode::FORBIDDEN, "admin permission required\n").into_response();
+    }
+    if !is_safe_filename(&name) {
+        return (StatusCode::BAD_REQUEST, "invalid filename\n").into_response();
+    }
+    match state.backend.delete(&access.team, &name).await {
+        Ok(()) => tracing::info!(team = access.team, name, "snapshot deleted via UI"),
+        Err(e) => tracing::warn!(name, "UI delete failed: {e}"),
+    }
+    Redirect::to(&format!("/ui{tqs}")).into_response()
+}
+
+async fn api_delete_snapshot(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let access = match resolve_team(&state, &headers).await {
+        Some(a) => a,
+        None => return (StatusCode::UNAUTHORIZED, "missing or invalid token\n").into_response(),
+    };
+    if access.perm != Permission::Admin {
+        return (StatusCode::FORBIDDEN, "admin permission required\n").into_response();
+    }
+    if !is_safe_filename(&name) {
+        return (StatusCode::BAD_REQUEST, "invalid filename\n").into_response();
+    }
+    match state.backend.delete(&access.team, &name).await {
+        Ok(()) => {
+            tracing::info!(team = access.team, name, "snapshot deleted via API");
+            (StatusCode::NO_CONTENT, "").into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("delete failed: {e}\n")).into_response(),
+    }
 }
 
 async fn create_share_link(
@@ -770,20 +912,28 @@ async fn create_share_link(
     state.shares.lock().await.insert(
         token.clone(),
         ShareEntry {
-            team,
+            team: team.clone(),
             name: name.clone(),
             expires_at,
         },
     );
 
-    let accept = headers
-        .get("accept")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    let accept = headers.get("accept").and_then(|v| v.to_str().ok()).unwrap_or("");
     if accept.contains("text/html") || params.contains_key("token") {
+        let tqs = if qt.is_empty() { String::new() } else { format!("?token={qt}") };
         let url = format!("/share/{token}");
-        let body = format!("<h2>Share link for {name}</h2><p>Valid 24 hours:</p><pre>{url}</pre><p><a href=\"{url}\">{url}</a></p>");
-        Html(ui_page("share link", &body)).into_response()
+        let name_esc = esc(&name);
+        let back = format!(r#"<div class="breadcrumb"><a href="/ui/{name_esc}{tqs}">← {name_esc}</a></div>"#);
+        let body = format!(r#"{back}<h1 class="page-title">Share link created</h1>
+<p class="page-sub">Valid for 24 hours</p>
+<div style="margin-top:16px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px">
+  <p class="mono-cell" style="word-break:break-all">{url}</p>
+</div>
+<div class="btn-group" style="margin-top:16px">
+  <a class="btn btn-primary" href="{url}">⬇ Download via share link</a>
+  <button class="btn btn-secondary" onclick="navigator.clipboard.writeText(location.origin+'{url}').then(()=>showToast('Copied!'))">Copy URL</button>
+</div>"#);
+        Html(ui_shell(&format!("rewind — {name_esc}"), &team, &tqs, &body, "")).into_response()
     } else {
         Json(serde_json::json!({ "share_url": format!("/share/{token}"), "expires_in_secs": 86_400 })).into_response()
     }
@@ -818,21 +968,136 @@ async fn download_shared(
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
 
-fn ui_page(title: &str, body: &str) -> String {
-    format!(
-        "<!DOCTYPE html><html><head><meta charset=utf-8><title>{title}</title>\
-         <style>body{{font-family:monospace;max-width:900px;margin:32px auto;padding:0 16px}}\
-         table{{border-collapse:collapse}}a{{color:#06c}}</style></head>\
-         <body><h1>rewind</h1>{body}</body></html>"
+fn ui_shell(title: &str, team: &str, tqs: &str, body: &str, scripts: &str) -> String {
+    let team_badge = if team.is_empty() {
+        String::new()
+    } else {
+        format!(r#"<span class="nav-team">{}</span>"#, esc(team))
+    };
+    format!(r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<style>
+:root{{--bg:#0f1117;--surface:#161b27;--border:#2a2f42;--text:#e2e8f0;--muted:#8892a4;--accent:#3b82f6;--green:#22c55e;--amber:#f59e0b;--red:#ef4444;--purple:#a855f7;--teal:#14b8a6}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.5}}
+code,.mono,.mono-cell{{font-family:'Cascadia Code','Fira Code',Menlo,monospace;font-size:12px}}
+a{{color:var(--accent);text-decoration:none}}a:hover{{text-decoration:underline}}
+nav{{background:var(--surface);border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;gap:12px;height:48px}}
+.nav-logo{{font-weight:700;font-size:16px;letter-spacing:-.3px;color:var(--text)}}
+.nav-logo span{{color:var(--accent)}}
+.nav-team{{margin-left:auto;font-size:12px;color:var(--muted);background:rgba(255,255,255,.05);padding:2px 10px;border-radius:12px;border:1px solid var(--border)}}
+.container{{max-width:1100px;margin:0 auto;padding:32px 24px}}
+.page-title{{font-size:20px;font-weight:600;margin-bottom:6px}}
+.page-title.mono{{font-family:'Cascadia Code','Fira Code',Menlo,monospace;font-size:16px}}
+.page-sub{{color:var(--muted);font-size:13px;margin-bottom:24px}}
+.breadcrumb{{font-size:13px;color:var(--muted);margin-bottom:16px}}
+.cards{{display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap}}
+.card{{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px 20px;min-width:120px}}
+.card-label{{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}}
+.card-value{{font-size:26px;font-weight:700}}
+.card-value.blue{{color:var(--accent)}}.card-value.purple{{color:var(--purple)}}
+.card-value.teal{{color:var(--teal)}}.card-value.gray{{color:var(--muted)}}
+.toolbar{{display:flex;align-items:center;gap:12px;margin-bottom:12px}}
+.filter-input{{background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 12px;font-size:13px;width:260px;outline:none}}
+.filter-input:focus{{border-color:var(--accent)}}.filter-input::placeholder{{color:var(--muted)}}
+.table-wrap{{border:1px solid var(--border);border-radius:8px;overflow:hidden}}
+table{{width:100%;border-collapse:collapse}}
+th{{background:var(--surface);color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:10px 14px;text-align:left;font-weight:500;border-bottom:1px solid var(--border)}}
+td{{padding:9px 14px;border-bottom:1px solid var(--border);vertical-align:middle}}
+tr:last-child td{{border-bottom:none}}tr:hover td{{background:rgba(255,255,255,.02)}}
+.badge{{display:inline-block;font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px;letter-spacing:.3px;text-transform:uppercase}}
+.badge-http{{background:rgba(59,130,246,.15);color:var(--accent)}}
+.badge-db{{background:rgba(168,85,247,.15);color:var(--purple)}}
+.badge-grpc{{background:rgba(20,184,166,.15);color:var(--teal)}}
+.badge-teal{{background:rgba(20,184,166,.15);color:var(--teal)}}
+.badge-sys{{background:rgba(136,146,164,.15);color:var(--muted)}}
+.badge-in{{background:rgba(34,197,94,.12);color:var(--green)}}
+.badge-out{{background:rgba(245,158,11,.12);color:var(--amber)}}
+.s2xx{{background:rgba(34,197,94,.15);color:var(--green)}}.s3xx{{background:rgba(59,130,246,.15);color:var(--accent)}}
+.s4xx{{background:rgba(245,158,11,.15);color:var(--amber)}}.s5xx{{background:rgba(239,68,68,.15);color:var(--red)}}
+.btn{{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;border:none;text-decoration:none!important}}
+.btn-sm{{padding:4px 10px;font-size:12px}}
+.btn-primary{{background:var(--accent);color:#fff}}.btn-primary:hover{{background:#2563eb}}
+.btn-secondary{{background:var(--surface);color:var(--text);border:1px solid var(--border)}}
+.btn-secondary:hover{{border-color:var(--accent);color:var(--accent)}}
+.btn-danger{{background:rgba(239,68,68,.1);color:var(--red);border:1px solid rgba(239,68,68,.25)}}
+.btn-danger:hover{{background:rgba(239,68,68,.2)}}
+.btn-group{{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:20px}}
+.section-title{{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);display:flex;align-items:center;gap:8px}}
+.diagram-section{{margin-top:28px}}
+.diagram-wrap{{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:24px;overflow-x:auto;min-height:80px}}
+.copy-btn{{background:none;border:1px solid var(--border);color:var(--muted);border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer}}
+.copy-btn:hover{{color:var(--text);border-color:var(--muted)}}
+.empty{{text-align:center;color:var(--muted);padding:48px}}
+#toast{{position:fixed;bottom:20px;right:20px;background:var(--surface);border:1px solid var(--green);color:var(--green);border-radius:8px;padding:10px 16px;font-size:13px;opacity:0;transition:opacity .3s;pointer-events:none}}
+</style>
+</head>
+<body>
+<nav>
+  <a href="/ui{tqs}" class="nav-logo" style="text-decoration:none">re<span>wind</span></a>
+  {team_badge}
+</nav>
+<div class="container">
+{body}
+</div>
+<div id="toast"></div>
+<script>
+function filterTable(input,tableId){{const q=input.value.toLowerCase();document.querySelectorAll('#'+tableId+' tbody tr').forEach(r=>{{r.style.display=(r.dataset.text||'').includes(q)?'':'none';}});}}
+function showToast(msg){{const t=document.getElementById('toast');t.textContent=msg;t.style.opacity='1';clearTimeout(t._tid);t._tid=setTimeout(()=>t.style.opacity='0',2200);}}
+</script>
+{scripts}
+</body>
+</html>"#,
+        tqs = tqs,
     )
 }
 
-async fn resolve_team_ui(
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+fn js_str(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$")
+}
+
+fn status_badge(code: Option<u16>) -> String {
+    match code {
+        None => String::new(),
+        Some(c) => {
+            let cls = match c { 200..=299 => "s2xx", 300..=399 => "s3xx", 400..=499 => "s4xx", _ => "s5xx" };
+            format!(r#"<span class="badge {cls}">{c}</span>"#)
+        }
+    }
+}
+
+fn ev_ts(ev: &crate::store::snapshot::Event) -> u64 {
+    use crate::store::snapshot::Event;
+    match ev {
+        Event::Http(h) => h.timestamp_ns,
+        Event::Db(d) => d.timestamp_ns,
+        Event::Grpc(g) => g.timestamp_ns,
+        Event::Syscall(s) => s.timestamp_ns,
+    }
+}
+
+fn format_ts_ns(ns: u64) -> String {
+    use chrono::{TimeZone, Utc};
+    let secs = (ns / 1_000_000_000) as i64;
+    Utc.timestamp_opt(secs, 0)
+        .single()
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| secs.to_string())
+}
+
+async fn resolve_team_with_qt(
     state: &ServerState,
     headers: &HeaderMap,
     query_token: &str,
-) -> Option<String> {
-    let access = if !query_token.is_empty() {
+) -> Option<TeamAccess> {
+    if !query_token.is_empty() {
         let mut h = headers.clone();
         if let Ok(v) = format!("Bearer {query_token}").parse() {
             h.insert(axum::http::header::AUTHORIZATION, v);
@@ -840,9 +1105,18 @@ async fn resolve_team_ui(
         resolve_team(state, &h).await
     } else {
         resolve_team(state, headers).await
-    };
-    // UI endpoints are read-only; require at least read permission.
-    access.filter(|a| a.perm.can_read()).map(|a| a.team)
+    }
+}
+
+async fn resolve_team_ui(
+    state: &ServerState,
+    headers: &HeaderMap,
+    query_token: &str,
+) -> Option<String> {
+    resolve_team_with_qt(state, headers, query_token)
+        .await
+        .filter(|a| a.perm.can_read())
+        .map(|a| a.team)
 }
 
 fn random_token() -> String {

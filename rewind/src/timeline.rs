@@ -55,9 +55,18 @@ pub async fn run(args: TimelineArgs) -> Result<()> {
 
 pub fn to_mermaid(snap: &Snapshot) -> String {
     let mut out = String::new();
+    writeln!(out, "```mermaid").unwrap();
+    out.push_str(&to_mermaid_inner(snap));
+    writeln!(out, "```").unwrap();
+    out
+}
+
+/// Returns the raw Mermaid `sequenceDiagram` block without markdown fences.
+/// Use this for inline browser rendering via the Mermaid JS library.
+pub fn to_mermaid_inner(snap: &Snapshot) -> String {
+    let mut out = String::new();
     let messages = build_messages(snap);
 
-    writeln!(out, "```mermaid").unwrap();
     writeln!(out, "sequenceDiagram").unwrap();
 
     // Declare participants in encounter order so Mermaid renders them left→right.
@@ -87,8 +96,6 @@ pub fn to_mermaid(snap: &Snapshot) -> String {
         )
         .unwrap();
     }
-
-    writeln!(out, "```").unwrap();
     out
 }
 
