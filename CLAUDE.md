@@ -158,7 +158,7 @@ Honest assessment of what blocks enterprise adoption, ordered by impact. Work th
 | E5 | **No load / scale validation** — collection server has never served production traffic; no load test, no chaos test, no proven shared-storage backend under concurrent writes. | Collection server | Pending | Enterprise buyers require load test results |
 | E6 | **No third-party security audit** — encryption, RBAC, HMAC validation are implemented but unaudited. SOC 2 / ISO 27001 customers require a penetration test or third-party review. | Security | Pending | Sales blocker for regulated industries |
 | E7 | **SaaS web UI is missing** — milestone 35 is marked Done but no browser-based UI exists; the collection server has API endpoints but no snapshot browsing, timeline visualisation, or team management UI. | Developer experience | Pending | Required for the commercial offering |
-| E8 | **No getting-started documentation** — no user guide, no API reference, no Kubernetes quickstart aimed at a non-contributor engineer. | Documentation | Pending | Adoption blocker; engineers won't evaluate what they can't run |
+| E8 | **No getting-started documentation** — no user guide, no API reference, no Kubernetes quickstart aimed at a non-contributor engineer. | Documentation | Done | `docs/getting-started.md` (15-min tutorial, troubleshooting); `docs/kubernetes.md` (DaemonSet install, snapshot capture, multi-node); `docs/configuration.md` (all CLI flags, env vars, server API); `docs/architecture.md` (eBPF probes, ring buffer, replay determinism, data flow). README updated with docs links. |
 
 
 

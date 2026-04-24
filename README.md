@@ -27,6 +27,13 @@ rewind captures the full causal chain of an incident and lets you replay it dete
 
 The output is a `.rwd` file (JSON) containing the full causal chain.
 
+## Documentation
+
+- **[Getting started](docs/getting-started.md)** — capture and replay your first incident in 15 minutes
+- **[Kubernetes guide](docs/kubernetes.md)** — DaemonSet deployment, snapshot capture, multi-node incidents
+- **[Configuration reference](docs/configuration.md)** — all CLI flags, environment variables, server API
+- **[Architecture](docs/architecture.md)** — how the eBPF probes, ring buffer, and replay engine work
+
 ## Quickstart
 
 > **Requirements:** Linux 5.10+, nightly Rust, Docker + Compose, root/CAP_BPF for recording.
