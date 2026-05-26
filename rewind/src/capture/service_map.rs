@@ -136,7 +136,11 @@ fn docker_container_id(service: &str) -> Option<String> {
         return None;
     }
     let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if id.len() >= 12 { Some(id) } else { None }
+    if id.len() >= 12 {
+        Some(id)
+    } else {
+        None
+    }
 }
 
 // ── Kubernetes / crictl helpers ───────────────────────────────────────────────
@@ -177,7 +181,11 @@ fn crictl_container_map() -> Option<HashMap<String, String>> {
         }
     }
 
-    if map.is_empty() { None } else { Some(map) }
+    if map.is_empty() {
+        None
+    } else {
+        Some(map)
+    }
 }
 
 // ── /proc fallback ────────────────────────────────────────────────────────────
@@ -213,8 +221,7 @@ pub(crate) fn strip_pod_suffix(pod_name: &str) -> String {
         let last = parts[parts.len() - 1];
         let second_last = parts[parts.len() - 2];
         // ReplicaSet pod: last segment is 5 alphanumeric, second-to-last is 8-10
-        let last_is_pod_hash =
-            last.len() == 5 && last.chars().all(|c| c.is_ascii_alphanumeric());
+        let last_is_pod_hash = last.len() == 5 && last.chars().all(|c| c.is_ascii_alphanumeric());
         let second_is_rs_hash = (8..=10).contains(&second_last.len())
             && second_last.chars().all(|c| c.is_ascii_alphanumeric());
         if last_is_pod_hash && second_is_rs_hash {
@@ -291,8 +298,7 @@ mod tests {
 
     #[test]
     fn cgroup_v1_docker_path() {
-        let cgroup =
-            "12:memory:/docker/abc123def456789abcdef0123456789ab\n\
+        let cgroup = "12:memory:/docker/abc123def456789abcdef0123456789ab\n\
              11:cpu,cpuacct:/docker/abc123def456789abcdef0123456789ab\n";
         assert_eq!(parse_container_id(cgroup), Some("abc123def456".to_string()));
     }
@@ -319,8 +325,7 @@ mod tests {
 
     #[test]
     fn cgroup_k8s_v1_kubepods_path() {
-        let cgroup =
-            "11:memory:/kubepods/besteffort/pod9876fedc-ba98-7654-3210-fedcba987654/\
+        let cgroup = "11:memory:/kubepods/besteffort/pod9876fedc-ba98-7654-3210-fedcba987654/\
              abc123def456789abcdef0123456789ab\n";
         assert_eq!(parse_container_id(cgroup), Some("abc123def456".to_string()));
     }
@@ -347,7 +352,10 @@ mod tests {
 
     #[test]
     fn strip_multi_word_deployment() {
-        assert_eq!(strip_pod_suffix("payment-service-7d9f8b64c-xk2p9"), "payment-service");
+        assert_eq!(
+            strip_pod_suffix("payment-service-7d9f8b64c-xk2p9"),
+            "payment-service"
+        );
     }
 
     #[test]

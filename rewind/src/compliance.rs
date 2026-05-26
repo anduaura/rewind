@@ -216,8 +216,10 @@ async fn scan_snapshots(dir: &Path) -> Result<SnapshotInventory> {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        chrono::DateTime::<chrono::Utc>::from(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
-            .to_rfc3339()
+        chrono::DateTime::<chrono::Utc>::from(
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs),
+        )
+        .to_rfc3339()
     }
 
     Ok(SnapshotInventory {
@@ -242,7 +244,16 @@ async fn scan_dir(dir: &Path) -> Result<SnapStats> {
 
     let mut root_entries = match fs::read_dir(dir).await {
         Ok(d) => d,
-        Err(_) => return Ok(SnapStats { total, encrypted, total_bytes, teams, oldest, newest }),
+        Err(_) => {
+            return Ok(SnapStats {
+                total,
+                encrypted,
+                total_bytes,
+                teams,
+                oldest,
+                newest,
+            })
+        }
     };
 
     // Support both flat layout (dir/*.rwd) and per-team layout (dir/team/*.rwd)
@@ -277,7 +288,14 @@ async fn scan_dir(dir: &Path) -> Result<SnapStats> {
     }
 
     teams.sort();
-    Ok(SnapStats { total, encrypted, total_bytes, teams, oldest, newest })
+    Ok(SnapStats {
+        total,
+        encrypted,
+        total_bytes,
+        teams,
+        oldest,
+        newest,
+    })
 }
 
 async fn scan_rwd_files(
@@ -344,14 +362,14 @@ struct AuditLine {
 async fn scan_audit_log(path: Option<&Path>) -> AuditSummary {
     let log_path = path
         .map(|p| p.to_path_buf())
-        .or_else(|| {
-            std::env::var("REWIND_AUDIT_LOG")
-                .ok()
-                .map(PathBuf::from)
-        })
+        .or_else(|| std::env::var("REWIND_AUDIT_LOG").ok().map(PathBuf::from))
         .or_else(|| {
             let default = PathBuf::from("/var/log/rewind/audit.log");
-            if default.exists() { Some(default) } else { None }
+            if default.exists() {
+                Some(default)
+            } else {
+                None
+            }
         });
 
     let Some(ref lp) = log_path else {
@@ -421,8 +439,7 @@ async fn scan_audit_log(path: Option<&Path>) -> AuditSummary {
 // ── Control evaluators ────────────────────────────────────────────────────────
 
 fn eval_encryption(inv: &SnapshotInventory, key: &Option<String>) -> Control {
-    let key_configured = key.is_some()
-        || std::env::var("REWIND_SNAPSHOT_KEY").is_ok();
+    let key_configured = key.is_some() || std::env::var("REWIND_SNAPSHOT_KEY").is_ok();
 
     if inv.total == 0 {
         return Control {
@@ -453,9 +470,7 @@ fn eval_encryption(inv: &SnapshotInventory, key: &Option<String>) -> Control {
             status: ControlStatus::Disabled,
             detail: format!(
                 "{}/{} snapshots encrypted ({:.0}%) — mixed state",
-                inv.encrypted,
-                inv.total,
-                inv.encryption_coverage_pct
+                inv.encrypted, inv.total, inv.encryption_coverage_pct
             ),
         }
     }
@@ -482,10 +497,7 @@ fn eval_access_control(
             .map(|m| m.values().collect::<std::collections::HashSet<_>>().len());
         return AccessControlDetail {
             status: ControlStatus::Enabled,
-            detail: format!(
-                "RBAC token registry ({} teams)",
-                teams.unwrap_or(0)
-            ),
+            detail: format!("RBAC token registry ({} teams)", teams.unwrap_or(0)),
             mode: Some("rbac".to_string()),
             oidc_issuer: None,
             teams,
@@ -517,7 +529,10 @@ fn eval_transport(tls_cert: Option<&Path>) -> Control {
         },
         Some(p) => Control {
             status: ControlStatus::Disabled,
-            detail: format!("TLS cert path configured but file not found: {}", p.display()),
+            detail: format!(
+                "TLS cert path configured but file not found: {}",
+                p.display()
+            ),
         },
         None => Control {
             status: ControlStatus::Unconfigured,
@@ -552,7 +567,8 @@ fn eval_retention(max_age: Option<&str>, max_size: Option<&str>) -> Control {
     match (max_age, max_size) {
         (None, None) => Control {
             status: ControlStatus::Unconfigured,
-            detail: "No retention policy configured — snapshots accumulate indefinitely".to_string(),
+            detail: "No retention policy configured — snapshots accumulate indefinitely"
+                .to_string(),
         },
         (age, size) => Control {
             status: ControlStatus::Enabled,
@@ -601,13 +617,19 @@ fn render_markdown(r: &ComplianceReport) -> String {
 
     md.push_str("## Controls\n\n");
     md.push_str("| Control | Status | Detail |\n|---|---|---|\n");
-    md.push_str(&ctrl_row("Encryption at rest", &r.controls.encryption_at_rest));
+    md.push_str(&ctrl_row(
+        "Encryption at rest",
+        &r.controls.encryption_at_rest,
+    ));
     md.push_str(&format!(
         "| Access control | {} | {} |\n",
         status_icon(&r.controls.access_control.status),
         r.controls.access_control.detail,
     ));
-    md.push_str(&ctrl_row("Transport security", &r.controls.transport_security));
+    md.push_str(&ctrl_row(
+        "Transport security",
+        &r.controls.transport_security,
+    ));
     md.push_str(&ctrl_row("Audit log", &r.controls.audit_log));
     md.push_str(&ctrl_row("Retention policy", &r.controls.retention_policy));
     md.push_str(&ctrl_row("Data isolation", &r.controls.data_isolation));
@@ -617,11 +639,12 @@ fn render_markdown(r: &ComplianceReport) -> String {
     md.push_str(&format!("- **Total:** {}\n", r.snapshots.total));
     md.push_str(&format!(
         "- **Encrypted:** {} / {} ({:.0}%)\n",
-        r.snapshots.encrypted,
-        r.snapshots.total,
-        r.snapshots.encryption_coverage_pct,
+        r.snapshots.encrypted, r.snapshots.total, r.snapshots.encryption_coverage_pct,
     ));
-    md.push_str(&format!("- **Total size:** {} bytes\n", r.snapshots.total_bytes));
+    md.push_str(&format!(
+        "- **Total size:** {} bytes\n",
+        r.snapshots.total_bytes
+    ));
     if !r.snapshots.teams.is_empty() {
         md.push_str(&format!("- **Teams:** {}\n", r.snapshots.teams.join(", ")));
     }
@@ -635,7 +658,10 @@ fn render_markdown(r: &ComplianceReport) -> String {
 
     if r.audit.reachable {
         md.push_str("## Audit log\n\n");
-        md.push_str(&format!("- **Path:** {}\n", r.audit.log_path.as_deref().unwrap_or("?")));
+        md.push_str(&format!(
+            "- **Path:** {}\n",
+            r.audit.log_path.as_deref().unwrap_or("?")
+        ));
         md.push_str(&format!("- **Events:** {}\n", r.audit.event_count));
         if let (Some(e), Some(l)) = (&r.audit.earliest, &r.audit.latest) {
             md.push_str(&format!("- **Range:** {e} → {l}\n"));

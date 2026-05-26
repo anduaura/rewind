@@ -53,10 +53,10 @@ struct VaultResponse {
 }
 
 async fn resolve_vault(path: &str) -> Result<String> {
-    let addr = std::env::var("VAULT_ADDR")
-        .context("VAULT_ADDR is required for vault:// secrets")?;
-    let token = std::env::var("VAULT_TOKEN")
-        .context("VAULT_TOKEN is required for vault:// secrets")?;
+    let addr =
+        std::env::var("VAULT_ADDR").context("VAULT_ADDR is required for vault:// secrets")?;
+    let token =
+        std::env::var("VAULT_TOKEN").context("VAULT_TOKEN is required for vault:// secrets")?;
 
     let url = format!("{}/v1/{}", addr.trim_end_matches('/'), path);
     let resp: VaultResponse = http_client()?
@@ -72,7 +72,12 @@ async fn resolve_vault(path: &str) -> Result<String> {
         .context("parsing Vault response")?;
 
     // KV v2: {"data": {"data": {"value": "..."}}}
-    if let Some(v) = resp.data.get("data").and_then(|d| d.get("value")).and_then(|v| v.as_str()) {
+    if let Some(v) = resp
+        .data
+        .get("data")
+        .and_then(|d| d.get("value"))
+        .and_then(|v| v.as_str())
+    {
         return Ok(v.to_string());
     }
     // KV v1: {"data": {"value": "..."}}
@@ -164,9 +169,8 @@ fn sigv4_authorization(p: &SigV4Params<'_>) -> Result<String> {
         p.host, p.datetime
     );
     let signed_headers = "content-type;host;x-amz-date;x-amz-target";
-    let canonical_request = format!(
-        "POST\n/\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
-    );
+    let canonical_request =
+        format!("POST\n/\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}");
 
     let scope = format!("{}/{}/{}/aws4_request", p.date, p.region, p.service);
     let string_to_sign = format!(
@@ -176,7 +180,10 @@ fn sigv4_authorization(p: &SigV4Params<'_>) -> Result<String> {
     );
 
     let signing_key = {
-        let k = hmac_sha256(format!("AWS4{}", p.secret_key).as_bytes(), p.date.as_bytes())?;
+        let k = hmac_sha256(
+            format!("AWS4{}", p.secret_key).as_bytes(),
+            p.date.as_bytes(),
+        )?;
         let k = hmac_sha256(&k, p.region.as_bytes())?;
         let k = hmac_sha256(&k, p.service.as_bytes())?;
         hmac_sha256(&k, b"aws4_request")?
@@ -194,8 +201,8 @@ fn hex_sha256(data: &[u8]) -> String {
 }
 
 fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
-    let mut mac = HmacSha256::new_from_slice(key)
-        .map_err(|e| anyhow::anyhow!("HMAC key error: {e}"))?;
+    let mut mac =
+        HmacSha256::new_from_slice(key).map_err(|e| anyhow::anyhow!("HMAC key error: {e}"))?;
     mac.update(data);
     Ok(mac.finalize().into_bytes().to_vec())
 }
@@ -227,9 +234,7 @@ async fn resolve_azure(rest: &str) -> Result<String> {
 
     let client = http_client()?;
 
-    let token_url = format!(
-        "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
-    );
+    let token_url = format!("https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token");
     let token_resp: AzureTokenResponse = client
         .post(&token_url)
         .form(&[
@@ -247,9 +252,8 @@ async fn resolve_azure(rest: &str) -> Result<String> {
         .await
         .context("parsing Azure token response")?;
 
-    let secret_url = format!(
-        "https://{vault_name}.vault.azure.net/secrets/{secret_name}?api-version=7.4"
-    );
+    let secret_url =
+        format!("https://{vault_name}.vault.azure.net/secrets/{secret_name}?api-version=7.4");
     let secret_resp: AzureSecretResponse = client
         .get(&secret_url)
         .bearer_auth(&token_resp.access_token)
@@ -314,7 +318,9 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_key_opt_plain_string() {
-        let result = resolve_key_opt(Some("passphrase".to_string())).await.unwrap();
+        let result = resolve_key_opt(Some("passphrase".to_string()))
+            .await
+            .unwrap();
         assert_eq!(result.as_deref(), Some("passphrase"));
     }
 
@@ -338,9 +344,7 @@ mod tests {
     fn azure_uri_missing_slash_errors() {
         // azure://vault-only — no secret name
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let err = rt
-            .block_on(resolve("azure://vaultonly"))
-            .unwrap_err();
+        let err = rt.block_on(resolve("azure://vaultonly")).unwrap_err();
         assert!(err.to_string().contains("azure://vault-name/secret-name"));
     }
 }

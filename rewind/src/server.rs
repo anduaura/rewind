@@ -181,7 +181,9 @@ impl TokenRegistry {
     pub fn load(path: &std::path::Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)?;
         let v: serde_json::Value = serde_json::from_str(&raw)?;
-        let obj = v.as_object().ok_or_else(|| anyhow::anyhow!("tokens file must be a JSON object"))?;
+        let obj = v
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("tokens file must be a JSON object"))?;
         let mut map = HashMap::new();
         for (token, val) in obj {
             let (team, perm) = if let Some(s) = val.as_str() {
@@ -279,7 +281,6 @@ struct ServerState {
 }
 
 pub async fn run(args: ServerArgs) -> Result<()> {
-
     let registry = if let Some(p) = &args.tokens_file {
         TokenRegistry::load(p)?
     } else {
@@ -291,10 +292,7 @@ pub async fn run(args: ServerArgs) -> Result<()> {
 
     let oidc = match &args.oidc_issuer {
         Some(issuer) => {
-            let audience = args
-                .oidc_audience
-                .clone()
-                .unwrap_or_else(|| issuer.clone());
+            let audience = args.oidc_audience.clone().unwrap_or_else(|| issuer.clone());
             Some(Arc::new(OidcValidator::new(
                 issuer.clone(),
                 audience,
@@ -334,9 +332,9 @@ pub async fn run(args: ServerArgs) -> Result<()> {
         let backend_clone = Arc::clone(&backend);
         let iid = instance_id.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(
-                std::time::Duration::from_secs(crate::storage::LEADER_TTL_SECS / 2),
-            );
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+                crate::storage::LEADER_TTL_SECS / 2,
+            ));
             loop {
                 interval.tick().await;
                 let is_leader = backend_clone.try_become_leader(&iid).await;
@@ -429,7 +427,10 @@ async fn healthz() -> &'static str {
 
 async fn server_metrics(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
     (
-        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4",
+        )],
         state.metrics.prometheus_text(),
     )
 }
@@ -448,7 +449,11 @@ async fn upload_snapshot(
     };
     if !access.perm.can_write() {
         state.metrics.inc_server_upload_error();
-        return (StatusCode::FORBIDDEN, "token does not have write permission\n").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "token does not have write permission\n",
+        )
+            .into_response();
     }
     let team = access.team;
 
@@ -514,7 +519,11 @@ async fn list_snapshots(
         None => return (StatusCode::UNAUTHORIZED, "missing or invalid token\n").into_response(),
     };
     if !access.perm.can_read() {
-        return (StatusCode::FORBIDDEN, "token does not have read permission\n").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "token does not have read permission\n",
+        )
+            .into_response();
     }
     let team = access.team;
 
@@ -538,7 +547,11 @@ async fn download_snapshot(
         None => return (StatusCode::UNAUTHORIZED, "missing or invalid token\n").into_response(),
     };
     if !access.perm.can_read() {
-        return (StatusCode::FORBIDDEN, "token does not have read permission\n").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "token does not have read permission\n",
+        )
+            .into_response();
     }
     let team = access.team;
     if !is_safe_filename(&name) {
@@ -568,13 +581,19 @@ fn resolve_team_static(state: &ServerState, headers: &HeaderMap) -> Option<TeamA
     } else if let Some(expected) = &state.token {
         // Single-token mode: full admin access.
         if bearer == expected {
-            Some(TeamAccess { team: "default".to_string(), perm: Permission::Admin })
+            Some(TeamAccess {
+                team: "default".to_string(),
+                perm: Permission::Admin,
+            })
         } else {
             None
         }
     } else {
         // Open server (no auth configured) — admin access.
-        Some(TeamAccess { team: "default".to_string(), perm: Permission::Admin })
+        Some(TeamAccess {
+            team: "default".to_string(),
+            perm: Permission::Admin,
+        })
     }
 }
 
@@ -589,7 +608,10 @@ async fn resolve_team(state: &ServerState, headers: &HeaderMap) -> Option<TeamAc
             .unwrap_or("");
         if let Some(team) = oidc.validate(bearer).await {
             // OIDC tokens get admin access (team-scoped by OIDC claims).
-            return Some(TeamAccess { team, perm: Permission::Admin });
+            return Some(TeamAccess {
+                team,
+                perm: Permission::Admin,
+            });
         }
         // Fall through to static token check so mixed-auth environments work.
     }
@@ -645,7 +667,11 @@ async fn ui_dashboard(
         }
     };
     let team = access.team;
-    let tqs = if qt.is_empty() { String::new() } else { format!("?token={qt}") };
+    let tqs = if qt.is_empty() {
+        String::new()
+    } else {
+        format!("?token={qt}")
+    };
 
     let mut entries = state.backend.list(&team).await.unwrap_or_default();
     entries.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
@@ -663,10 +689,13 @@ async fn ui_dashboard(
     }
     let empty = if entries.is_empty() {
         r#"<tr><td colspan="3" class="empty">No snapshots yet.</td></tr>"#
-    } else { "" };
+    } else {
+        ""
+    };
 
     let team_esc = esc(&team);
-    let body = format!(r#"<h1 class="page-title">Snapshots</h1>
+    let body = format!(
+        r#"<h1 class="page-title">Snapshots</h1>
 <p class="page-sub">Team: <strong>{team_esc}</strong> &middot; {count} snapshots &middot; {total_kb} KB total</p>
 <div class="cards">
   <div class="card"><div class="card-label">Snapshots</div><div class="card-value">{count}</div></div>
@@ -680,8 +709,16 @@ async fn ui_dashboard(
     <thead><tr><th>Name</th><th>Size</th><th>Actions</th></tr></thead>
     <tbody>{rows}{empty}</tbody>
   </table>
-</div>"#);
-    Html(ui_shell(&format!("rewind — {team_esc}"), &team, &tqs, &body, "")).into_response()
+</div>"#
+    );
+    Html(ui_shell(
+        &format!("rewind — {team_esc}"),
+        &team,
+        &tqs,
+        &body,
+        "",
+    ))
+    .into_response()
 }
 
 async fn ui_snapshot_detail(
@@ -693,18 +730,41 @@ async fn ui_snapshot_detail(
     let qt = params.get("token").map_or("", |s| s.as_str());
     let access = match resolve_team_with_qt(&state, &headers, qt).await {
         Some(a) if a.perm.can_read() => a,
-        _ => return Html(ui_shell("unauthorized", "", "", "<p>Unauthorized.</p>", "")).into_response(),
+        _ => {
+            return Html(ui_shell("unauthorized", "", "", "<p>Unauthorized.</p>", ""))
+                .into_response()
+        }
     };
     let team = access.team.clone();
     let is_admin = access.perm == Permission::Admin;
-    let tqs = if qt.is_empty() { String::new() } else { format!("?token={qt}") };
+    let tqs = if qt.is_empty() {
+        String::new()
+    } else {
+        format!("?token={qt}")
+    };
 
     if !is_safe_filename(&name) {
-        return Html(ui_shell("error", &team, &tqs, "<p>Invalid snapshot name.</p>", "")).into_response();
+        return Html(ui_shell(
+            "error",
+            &team,
+            &tqs,
+            "<p>Invalid snapshot name.</p>",
+            "",
+        ))
+        .into_response();
     }
     let data = match state.backend.get(&team, &name).await {
         Ok(b) => b.to_vec(),
-        Err(_) => return Html(ui_shell("not found", &team, &tqs, "<p>Snapshot not found.</p>", "")).into_response(),
+        Err(_) => {
+            return Html(ui_shell(
+                "not found",
+                &team,
+                &tqs,
+                "<p>Snapshot not found.</p>",
+                "",
+            ))
+            .into_response()
+        }
     };
 
     let size_kb = data.len() / 1024;
@@ -712,17 +772,35 @@ async fn ui_snapshot_detail(
     let back = format!(r#"<div class="breadcrumb"><a href="/ui{tqs}">← Snapshots</a></div>"#);
 
     if crate::crypto::is_encrypted(&data) {
-        let body = format!(r#"{back}<h1 class="page-title mono">{name_esc}</h1>
+        let body = format!(
+            r#"{back}<h1 class="page-title mono">{name_esc}</h1>
 <p class="page-sub">Encrypted snapshot &middot; {size_kb} KB</p>
-<p style="margin-top:16px;color:var(--muted)"><a href="/snapshots/{name_esc}{tqs}" download>Download</a> and inspect with <code>rewind inspect --key &lt;passphrase&gt;</code>.</p>"#);
-        return Html(ui_shell(&format!("rewind — {name_esc}"), &team, &tqs, &body, "")).into_response();
+<p style="margin-top:16px;color:var(--muted)"><a href="/snapshots/{name_esc}{tqs}" download>Download</a> and inspect with <code>rewind inspect --key &lt;passphrase&gt;</code>.</p>"#
+        );
+        return Html(ui_shell(
+            &format!("rewind — {name_esc}"),
+            &team,
+            &tqs,
+            &body,
+            "",
+        ))
+        .into_response();
     }
 
     use crate::store::snapshot::Event;
     let Ok(snap) = serde_json::from_slice::<crate::store::snapshot::Snapshot>(&data) else {
-        let body = format!(r#"{back}<h1 class="page-title mono">{name_esc}</h1>
-<p>Could not parse snapshot ({size_kb} KB). <a href="/snapshots/{name_esc}{tqs}" download>Download</a>.</p>"#);
-        return Html(ui_shell(&format!("rewind — {name_esc}"), &team, &tqs, &body, "")).into_response();
+        let body = format!(
+            r#"{back}<h1 class="page-title mono">{name_esc}</h1>
+<p>Could not parse snapshot ({size_kb} KB). <a href="/snapshots/{name_esc}{tqs}" download>Download</a>.</p>"#
+        );
+        return Html(ui_shell(
+            &format!("rewind — {name_esc}"),
+            &team,
+            &tqs,
+            &body,
+            "",
+        ))
+        .into_response();
     };
 
     let (mut http_cnt, mut db_cnt, mut grpc_cnt, mut sys_cnt) = (0usize, 0usize, 0usize, 0usize);
@@ -737,31 +815,81 @@ async fn ui_snapshot_detail(
         let (type_badge, service, detail, search_text) = match ev {
             Event::Http(h) => {
                 http_cnt += 1;
-                let dir_cls = if h.direction == "inbound" { "badge-in" } else { "badge-out" };
-                let dir_lbl = if h.direction == "inbound" { "IN" } else { "OUT" };
+                let dir_cls = if h.direction == "inbound" {
+                    "badge-in"
+                } else {
+                    "badge-out"
+                };
+                let dir_lbl = if h.direction == "inbound" {
+                    "IN"
+                } else {
+                    "OUT"
+                };
                 let st = status_badge(h.status_code);
-                let d = format!(r#"<span class="badge {dir_cls}">{dir_lbl}</span> <span class="mono-cell">{} {}</span> {st}"#, esc(&h.method), esc(&h.path));
-                let s = format!("http {} {} {} {}", h.direction, h.method, h.path, h.status_code.map(|c|c.to_string()).unwrap_or_default());
-                (r#"<span class="badge badge-http">HTTP</span>"#.to_string(), esc(&h.service), d, s)
+                let d = format!(
+                    r#"<span class="badge {dir_cls}">{dir_lbl}</span> <span class="mono-cell">{} {}</span> {st}"#,
+                    esc(&h.method),
+                    esc(&h.path)
+                );
+                let s = format!(
+                    "http {} {} {} {}",
+                    h.direction,
+                    h.method,
+                    h.path,
+                    h.status_code.map(|c| c.to_string()).unwrap_or_default()
+                );
+                (
+                    r#"<span class="badge badge-http">HTTP</span>"#.to_string(),
+                    esc(&h.service),
+                    d,
+                    s,
+                )
             }
             Event::Db(d) => {
                 db_cnt += 1;
-                let proto_cls = if d.protocol == "redis" { "badge-teal" } else { "badge-db" };
-                let det = format!(r#"<span class="badge {proto_cls}">{}</span> <span class="mono-cell">{}</span>"#, esc(&d.protocol.to_uppercase()), esc(&d.query));
+                let proto_cls = if d.protocol == "redis" {
+                    "badge-teal"
+                } else {
+                    "badge-db"
+                };
+                let det = format!(
+                    r#"<span class="badge {proto_cls}">{}</span> <span class="mono-cell">{}</span>"#,
+                    esc(&d.protocol.to_uppercase()),
+                    esc(&d.query)
+                );
                 let s = format!("db {} {}", d.protocol, d.query);
-                (r#"<span class="badge badge-db">DB</span>"#.to_string(), esc(&d.service), det, s)
+                (
+                    r#"<span class="badge badge-db">DB</span>"#.to_string(),
+                    esc(&d.service),
+                    det,
+                    s,
+                )
             }
             Event::Grpc(g) => {
                 grpc_cnt += 1;
                 let det = format!(r#"<span class="mono-cell">{}</span>"#, esc(&g.path));
                 let s = format!("grpc {}", g.path);
-                (r#"<span class="badge badge-grpc">gRPC</span>"#.to_string(), esc(&g.service), det, s)
+                (
+                    r#"<span class="badge badge-grpc">gRPC</span>"#.to_string(),
+                    esc(&g.service),
+                    det,
+                    s,
+                )
             }
             Event::Syscall(s) => {
                 sys_cnt += 1;
-                let det = format!(r#"<span class="mono-cell">{}</span> <span class="muted">→ {}</span>"#, esc(&s.kind), s.return_value);
+                let det = format!(
+                    r#"<span class="mono-cell">{}</span> <span class="muted">→ {}</span>"#,
+                    esc(&s.kind),
+                    s.return_value
+                );
                 let sr = format!("syscall {} {}", s.kind, s.return_value);
-                (r#"<span class="badge badge-sys">SYS</span>"#.to_string(), String::new(), det, sr)
+                (
+                    r#"<span class="badge badge-sys">SYS</span>"#.to_string(),
+                    String::new(),
+                    det,
+                    sr,
+                )
             }
         };
         ev_rows.push_str(&format!(
@@ -771,22 +899,31 @@ async fn ui_snapshot_detail(
     }
 
     let delete_btn = if is_admin {
-        format!(r#"<form method="post" action="/ui/{name}/delete{tqs}" style="display:inline" onsubmit="return confirm('Delete {name_esc}? This cannot be undone.')"><button type="submit" class="btn btn-danger">🗑 Delete</button></form>"#)
-    } else { String::new() };
+        format!(
+            r#"<form method="post" action="/ui/{name}/delete{tqs}" style="display:inline" onsubmit="return confirm('Delete {name_esc}? This cannot be undone.')"><button type="submit" class="btn btn-danger">🗑 Delete</button></form>"#
+        )
+    } else {
+        String::new()
+    };
 
     let mermaid_src = crate::timeline::to_mermaid_inner(&snap);
     let mermaid_js = js_str(&mermaid_src);
     let has_diagram = !snap.events.is_empty();
 
     let diagram_html = if has_diagram {
-        format!(r#"<div class="diagram-section">
+        format!(
+            r#"<div class="diagram-section">
   <div class="section-title">Sequence Diagram <button class="copy-btn" onclick="copyMermaid()">Copy source</button></div>
   <div class="diagram-wrap" id="diagram"><div style="color:var(--muted);font-size:12px">Loading diagram…</div></div>
-</div>"#)
-    } else { String::new() };
+</div>"#
+        )
+    } else {
+        String::new()
+    };
 
     let scripts = if has_diagram {
-        format!(r#"<script type="module">
+        format!(
+            r#"<script type="module">
 import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
 mermaid.initialize({{startOnLoad:false,theme:'dark',securityLevel:'loose'}});
 const src = `{mermaid_js}`;
@@ -797,10 +934,14 @@ window._mSrc = src;
   try{{const {{svg}}=await mermaid.render('seq'+Date.now(),src);el.innerHTML=svg;el.querySelector('svg').style.maxWidth='100%';}}
   catch(e){{el.innerHTML='<pre style="white-space:pre-wrap;font-size:11px;color:var(--muted)">'+src.replace(/</g,'&lt;')+'</pre>';}}
 }})();
-</script><script>function copyMermaid(){{navigator.clipboard.writeText(window._mSrc||'').then(()=>showToast('Copied!'));}}</script>"#)
-    } else { String::new() };
+</script><script>function copyMermaid(){{navigator.clipboard.writeText(window._mSrc||'').then(()=>showToast('Copied!'));}}</script>"#
+        )
+    } else {
+        String::new()
+    };
 
-    let body = format!(r#"{back}
+    let body = format!(
+        r#"{back}
 <h1 class="page-title mono">{name_esc}</h1>
 <p class="page-sub">Recorded {recorded_at} &middot; {services_esc} &middot; {size_kb} KB</p>
 <div class="cards">
@@ -836,8 +977,16 @@ async function doShare(){{
   }}catch(e){{showToast('Error: '+e.message);}}
   finally{{btn.disabled=false;btn.textContent='🔗 Share (24h)';}}
 }}
-</script>"#);
-    Html(ui_shell(&format!("rewind — {name_esc}"), &team, &tqs, &body, &scripts)).into_response()
+</script>"#
+    );
+    Html(ui_shell(
+        &format!("rewind — {name_esc}"),
+        &team,
+        &tqs,
+        &body,
+        &scripts,
+    ))
+    .into_response()
 }
 
 async fn ui_delete_snapshot(
@@ -847,7 +996,11 @@ async fn ui_delete_snapshot(
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let qt = params.get("token").map_or("", |s| s.as_str());
-    let tqs = if qt.is_empty() { String::new() } else { format!("?token={qt}") };
+    let tqs = if qt.is_empty() {
+        String::new()
+    } else {
+        format!("?token={qt}")
+    };
     let access = match resolve_team_with_qt(&state, &headers, qt).await {
         Some(a) => a,
         None => return (StatusCode::UNAUTHORIZED, "unauthorized\n").into_response(),
@@ -885,7 +1038,11 @@ async fn api_delete_snapshot(
             tracing::info!(team = access.team, name, "snapshot deleted via API");
             (StatusCode::NO_CONTENT, "").into_response()
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("delete failed: {e}\n")).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("delete failed: {e}\n"),
+        )
+            .into_response(),
     }
 }
 
@@ -918,13 +1075,23 @@ async fn create_share_link(
         },
     );
 
-    let accept = headers.get("accept").and_then(|v| v.to_str().ok()).unwrap_or("");
+    let accept = headers
+        .get("accept")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
     if accept.contains("text/html") || params.contains_key("token") {
-        let tqs = if qt.is_empty() { String::new() } else { format!("?token={qt}") };
+        let tqs = if qt.is_empty() {
+            String::new()
+        } else {
+            format!("?token={qt}")
+        };
         let url = format!("/share/{token}");
         let name_esc = esc(&name);
-        let back = format!(r#"<div class="breadcrumb"><a href="/ui/{name_esc}{tqs}">← {name_esc}</a></div>"#);
-        let body = format!(r#"{back}<h1 class="page-title">Share link created</h1>
+        let back = format!(
+            r#"<div class="breadcrumb"><a href="/ui/{name_esc}{tqs}">← {name_esc}</a></div>"#
+        );
+        let body = format!(
+            r#"{back}<h1 class="page-title">Share link created</h1>
 <p class="page-sub">Valid for 24 hours</p>
 <div style="margin-top:16px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px">
   <p class="mono-cell" style="word-break:break-all">{url}</p>
@@ -932,8 +1099,16 @@ async fn create_share_link(
 <div class="btn-group" style="margin-top:16px">
   <a class="btn btn-primary" href="{url}">⬇ Download via share link</a>
   <button class="btn btn-secondary" onclick="navigator.clipboard.writeText(location.origin+'{url}').then(()=>showToast('Copied!'))">Copy URL</button>
-</div>"#);
-        Html(ui_shell(&format!("rewind — {name_esc}"), &team, &tqs, &body, "")).into_response()
+</div>"#
+        );
+        Html(ui_shell(
+            &format!("rewind — {name_esc}"),
+            &team,
+            &tqs,
+            &body,
+            "",
+        ))
+        .into_response()
     } else {
         Json(serde_json::json!({ "share_url": format!("/share/{token}"), "expires_in_secs": 86_400 })).into_response()
     }
@@ -974,7 +1149,8 @@ fn ui_shell(title: &str, team: &str, tqs: &str, body: &str, scripts: &str) -> St
     } else {
         format!(r#"<span class="nav-team">{}</span>"#, esc(team))
     };
-    format!(r#"<!DOCTYPE html>
+    format!(
+        r#"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1056,18 +1232,28 @@ function showToast(msg){{const t=document.getElementById('toast');t.textContent=
 }
 
 fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn js_str(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$")
+    s.replace('\\', "\\\\")
+        .replace('`', "\\`")
+        .replace('$', "\\$")
 }
 
 fn status_badge(code: Option<u16>) -> String {
     match code {
         None => String::new(),
         Some(c) => {
-            let cls = match c { 200..=299 => "s2xx", 300..=399 => "s3xx", 400..=499 => "s4xx", _ => "s5xx" };
+            let cls = match c {
+                200..=299 => "s2xx",
+                300..=399 => "s3xx",
+                400..=499 => "s4xx",
+                _ => "s5xx",
+            };
             format!(r#"<span class="badge {cls}">{c}</span>"#)
         }
     }
@@ -1252,7 +1438,10 @@ mod tests {
     #[test]
     fn rbac_registry_maps_token_to_team() {
         let mut map = std::collections::HashMap::new();
-        map.insert("tok-a".to_string(), ("team-alpha".to_string(), Permission::Admin));
+        map.insert(
+            "tok-a".to_string(),
+            ("team-alpha".to_string(), Permission::Admin),
+        );
         let reg = TokenRegistry(map);
         let state = make_state(None, reg);
         let mut h = HeaderMap::new();
@@ -1265,7 +1454,10 @@ mod tests {
     #[test]
     fn rbac_registry_unknown_token_returns_none() {
         let mut map = std::collections::HashMap::new();
-        map.insert("tok-a".to_string(), ("team-alpha".to_string(), Permission::Admin));
+        map.insert(
+            "tok-a".to_string(),
+            ("team-alpha".to_string(), Permission::Admin),
+        );
         let reg = TokenRegistry(map);
         let state = make_state(None, reg);
         let mut h = HeaderMap::new();
@@ -1275,10 +1467,9 @@ mod tests {
 
     #[test]
     fn rbac_registry_write_only_token_cannot_read() {
-        let reg = TokenRegistry::load_from_str(
-            r#"{"agent": {"team": "payments", "perm": "write"}}"#,
-        )
-        .unwrap();
+        let reg =
+            TokenRegistry::load_from_str(r#"{"agent": {"team": "payments", "perm": "write"}}"#)
+                .unwrap();
         let state = make_state(None, reg);
         let mut h = HeaderMap::new();
         h.insert("authorization", "Bearer agent".parse().unwrap());
@@ -1289,10 +1480,8 @@ mod tests {
 
     #[test]
     fn rbac_registry_read_only_token_cannot_write() {
-        let reg = TokenRegistry::load_from_str(
-            r#"{"dev": {"team": "payments", "perm": "read"}}"#,
-        )
-        .unwrap();
+        let reg = TokenRegistry::load_from_str(r#"{"dev": {"team": "payments", "perm": "read"}}"#)
+            .unwrap();
         let state = make_state(None, reg);
         let mut h = HeaderMap::new();
         h.insert("authorization", "Bearer dev".parse().unwrap());

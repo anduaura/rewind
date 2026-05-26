@@ -79,20 +79,17 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
 
     // The recorded response to the trigger: same direction + method + path,
     // with a status code (i.e. the response the service sent back).
-    let recorded_response: Option<HttpRecord> = snapshot
-        .events
-        .iter()
-        .find_map(|e| match e {
-            Event::Http(h)
-                if h.direction == "inbound"
-                    && h.status_code.is_some()
-                    && h.method == trigger.method
-                    && h.path == trigger.path =>
-            {
-                Some(h.clone())
-            }
-            _ => None,
-        });
+    let recorded_response: Option<HttpRecord> = snapshot.events.iter().find_map(|e| match e {
+        Event::Http(h)
+            if h.direction == "inbound"
+                && h.status_code.is_some()
+                && h.method == trigger.method
+                && h.path == trigger.path =>
+        {
+            Some(h.clone())
+        }
+        _ => None,
+    });
 
     println!("  trigger:  {} {}", trigger.method, trigger.path);
     println!(
@@ -103,7 +100,11 @@ pub async fn run(args: ReplayArgs) -> Result<()> {
         println!(
             "  baseline: status={} body={}",
             rec.status_code.unwrap_or(0),
-            if rec.body.is_some() { "captured" } else { "none (run with --capture-bodies)" }
+            if rec.body.is_some() {
+                "captured"
+            } else {
+                "none (run with --capture-bodies)"
+            }
         );
     } else {
         println!("  baseline: none (no matching response in snapshot)");
@@ -307,10 +308,7 @@ fn write_compose_override(
             // Volume-mount the host libfaketime.so read-only into the container.
             // Format: "HOST_PATH:CONTAINER_PATH:ro"
             let vol = format!("{host_path}:{CONTAINER_FAKETIME_PATH}:ro");
-            svc_map.insert(
-                sv("volumes"),
-                serde_yaml::Value::Sequence(vec![sv(&vol)]),
-            );
+            svc_map.insert(sv("volumes"), serde_yaml::Value::Sequence(vec![sv(&vol)]));
         }
 
         services_map.insert(sv(name), serde_yaml::Value::Mapping(svc_map));

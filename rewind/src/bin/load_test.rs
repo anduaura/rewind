@@ -335,6 +335,9 @@ async fn main() {
         );
         std::process::exit(1);
     } else {
-        println!("PASS  error rate {error_pct:.2}% within threshold {:.2}%", args.max_error_pct);
+        println!(
+            "PASS  error rate {error_pct:.2}% within threshold {:.2}%",
+            args.max_error_pct
+        );
     }
 }
