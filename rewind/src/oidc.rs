@@ -91,7 +91,9 @@ impl OidcValidator {
         let keys = self.fresh_keys().await?;
 
         for key in &keys {
-            if let Some(team) = try_decode(token, key, &self.issuer, &self.audience, &self.team_claim) {
+            if let Some(team) =
+                try_decode(token, key, &self.issuer, &self.audience, &self.team_claim)
+            {
                 return Some(team);
             }
         }

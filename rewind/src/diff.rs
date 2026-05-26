@@ -64,13 +64,13 @@ pub enum DivergenceKind {
 impl fmt::Display for DivergenceKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingEvent         => write!(f, "missing event"),
-            Self::ExtraEvent           => write!(f, "extra event"),
-            Self::DbResponseChanged    => write!(f, "DB response changed"),
-            Self::HttpStatusChanged    => write!(f, "HTTP status changed"),
-            Self::HttpBodyChanged      => write!(f, "HTTP body changed"),
+            Self::MissingEvent => write!(f, "missing event"),
+            Self::ExtraEvent => write!(f, "extra event"),
+            Self::DbResponseChanged => write!(f, "DB response changed"),
+            Self::HttpStatusChanged => write!(f, "HTTP status changed"),
+            Self::HttpBodyChanged => write!(f, "HTTP body changed"),
             Self::SyscallReturnChanged => write!(f, "syscall return changed"),
-            Self::TimingDrift          => write!(f, "timing drift"),
+            Self::TimingDrift => write!(f, "timing drift"),
         }
     }
 }
@@ -204,15 +204,16 @@ fn diff_snapshots(
                                 .collect();
                             format!(
                                 "HTTP[{i}] {} {} body ({} field(s)):\n{}",
-                                base.method, base.path, diffs.len(),
+                                base.method,
+                                base.path,
+                                diffs.len(),
                                 lines.join("\n")
                             )
                         }
                         body_diff::BodyComparison::TextDivergence { recorded, actual } => {
                             format!(
                                 "HTTP[{i}] {} {} body:\n  baseline:  {}\n  candidate: {}",
-                                base.method, base.path,
-                                recorded, actual
+                                base.method, base.path, recorded, actual
                             )
                         }
                         _ => format!("HTTP[{i}] {} {} body diverged", base.method, base.path),
@@ -482,10 +483,16 @@ mod tests {
     #[test]
     fn http_body_change_detected() {
         let base = make_snapshot(vec![http_body_ev(
-            "outbound", "/order", Some(200), Some(r#"{"id":1}"#),
+            "outbound",
+            "/order",
+            Some(200),
+            Some(r#"{"id":1}"#),
         )]);
         let cand = make_snapshot(vec![http_body_ev(
-            "outbound", "/order", Some(200), Some(r#"{"id":2}"#),
+            "outbound",
+            "/order",
+            Some(200),
+            Some(r#"{"id":2}"#),
         )]);
         let report = diff_snapshots("a".into(), "b".into(), &base, &cand);
         assert!(report
@@ -520,9 +527,18 @@ mod tests {
 
     #[test]
     fn divergence_kind_display() {
-        assert_eq!(DivergenceKind::DbResponseChanged.to_string(), "DB response changed");
-        assert_eq!(DivergenceKind::HttpStatusChanged.to_string(), "HTTP status changed");
-        assert_eq!(DivergenceKind::HttpBodyChanged.to_string(), "HTTP body changed");
+        assert_eq!(
+            DivergenceKind::DbResponseChanged.to_string(),
+            "DB response changed"
+        );
+        assert_eq!(
+            DivergenceKind::HttpStatusChanged.to_string(),
+            "HTTP status changed"
+        );
+        assert_eq!(
+            DivergenceKind::HttpBodyChanged.to_string(),
+            "HTTP body changed"
+        );
         assert_eq!(DivergenceKind::MissingEvent.to_string(), "missing event");
     }
 

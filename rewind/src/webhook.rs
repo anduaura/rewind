@@ -93,7 +93,10 @@ async fn handle_webhook(
     if let Some(hmac_key) = &state.hmac_secret {
         if !verify_hmac_signature(&headers, &body, hmac_key) {
             tracing::warn!("webhook HMAC signature mismatch — request rejected");
-            return (StatusCode::UNAUTHORIZED, "invalid or missing webhook signature\n")
+            return (
+                StatusCode::UNAUTHORIZED,
+                "invalid or missing webhook signature\n",
+            )
                 .into_response();
         }
     } else if let Some(expected) = &state.secret {
@@ -103,7 +106,10 @@ async fn handle_webhook(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         if provided != expected {
-            return (StatusCode::UNAUTHORIZED, "invalid or missing X-Rewind-Secret\n")
+            return (
+                StatusCode::UNAUTHORIZED,
+                "invalid or missing X-Rewind-Secret\n",
+            )
                 .into_response();
         }
     }
@@ -244,7 +250,10 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 /// Heuristically identify the alert source from headers or body.
@@ -292,7 +301,10 @@ mod tests {
     fn hmac_github_style_valid() {
         let body = b"hello";
         let mut h = HeaderMap::new();
-        h.insert("x-hub-signature-256", hub_sig("mysecret", body).parse().unwrap());
+        h.insert(
+            "x-hub-signature-256",
+            hub_sig("mysecret", body).parse().unwrap(),
+        );
         assert!(verify_hmac_signature(&h, body, "mysecret"));
     }
 
@@ -300,7 +312,10 @@ mod tests {
     fn hmac_github_style_wrong_secret_rejected() {
         let body = b"hello";
         let mut h = HeaderMap::new();
-        h.insert("x-hub-signature-256", hub_sig("wrongsecret", body).parse().unwrap());
+        h.insert(
+            "x-hub-signature-256",
+            hub_sig("wrongsecret", body).parse().unwrap(),
+        );
         assert!(!verify_hmac_signature(&h, body, "mysecret"));
     }
 

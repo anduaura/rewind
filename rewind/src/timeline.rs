@@ -145,7 +145,10 @@ fn build_messages(snap: &Snapshot) -> Vec<Message> {
 
     // Collect service names from the snapshot metadata for resolving "unknown".
     let services = &snap.services;
-    let primary_service = services.first().cloned().unwrap_or_else(|| "service".into());
+    let primary_service = services
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "service".into());
 
     for event in &snap.events {
         match event {
@@ -258,7 +261,10 @@ fn build_messages(snap: &Snapshot) -> Vec<Message> {
 
 fn infer_http_target(path: &str) -> String {
     // If the path looks like it has a host prefix, extract it.
-    if let Some(rest) = path.strip_prefix("http://").or_else(|| path.strip_prefix("https://")) {
+    if let Some(rest) = path
+        .strip_prefix("http://")
+        .or_else(|| path.strip_prefix("https://"))
+    {
         if let Some(host) = rest.split('/').next() {
             return host.to_string();
         }
@@ -279,7 +285,13 @@ fn infer_grpc_target(path: &str) -> String {
 fn sanitize_actor(name: &str) -> String {
     // Mermaid actor names must not contain special chars.
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 

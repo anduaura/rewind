@@ -27,9 +27,9 @@ use serde_json::Value;
 #[derive(Debug)]
 pub struct ReplayOutcome {
     pub recorded_status: Option<u16>,
-    pub actual_status:   u16,
-    pub status_ok:       bool,
-    pub body:            BodyComparison,
+    pub actual_status: u16,
+    pub status_ok: bool,
+    pub body: BodyComparison,
 }
 
 #[derive(Debug)]
@@ -50,9 +50,9 @@ pub enum BodyComparison {
 #[derive(Debug, PartialEq)]
 pub struct FieldDiff {
     /// Dot-separated JSON path, e.g. `data.user.id` or `errors[0].message`.
-    pub path:     String,
+    pub path: String,
     pub recorded: String,
-    pub actual:   String,
+    pub actual: String,
 }
 
 impl ReplayOutcome {
@@ -73,9 +73,9 @@ impl ReplayOutcome {
 /// response body (headers-only capture).
 pub fn compare(
     recorded_status: Option<u16>,
-    recorded_body:   Option<&str>,
-    actual_status:   u16,
-    actual_body:     &str,
+    recorded_body: Option<&str>,
+    actual_status: u16,
+    actual_body: &str,
 ) -> ReplayOutcome {
     let status_ok = recorded_status.map(|s| s == actual_status).unwrap_or(true);
 
@@ -84,7 +84,12 @@ pub fn compare(
         Some(rec) => compare_bodies(rec, actual_body),
     };
 
-    ReplayOutcome { recorded_status, actual_status, status_ok, body }
+    ReplayOutcome {
+        recorded_status,
+        actual_status,
+        status_ok,
+        body,
+    }
 }
 
 fn compare_bodies(recorded: &str, actual: &str) -> BodyComparison {
@@ -110,7 +115,7 @@ fn compare_bodies(recorded: &str, actual: &str) -> BodyComparison {
             } else {
                 BodyComparison::TextDivergence {
                     recorded: rec_trimmed.to_string(),
-                    actual:   act_trimmed.to_string(),
+                    actual: act_trimmed.to_string(),
                 }
             }
         }
@@ -128,9 +133,9 @@ fn json_diff(rec: &Value, act: &Value, path: &str, out: &mut Vec<FieldDiff>) {
                 match a_map.get(key) {
                     Some(a_val) => json_diff(r_val, a_val, &child_path, out),
                     None => out.push(FieldDiff {
-                        path:     child_path,
+                        path: child_path,
                         recorded: json_display(r_val),
-                        actual:   "(missing)".to_string(),
+                        actual: "(missing)".to_string(),
                     }),
                 }
             }
@@ -138,9 +143,9 @@ fn json_diff(rec: &Value, act: &Value, path: &str, out: &mut Vec<FieldDiff>) {
             for key in a_map.keys() {
                 if !r_map.contains_key(key) {
                     out.push(FieldDiff {
-                        path:     child_path(path, key),
+                        path: child_path(path, key),
                         recorded: "(missing)".to_string(),
-                        actual:   json_display(&a_map[key]),
+                        actual: json_display(&a_map[key]),
                     });
                 }
             }
@@ -152,14 +157,14 @@ fn json_diff(rec: &Value, act: &Value, path: &str, out: &mut Vec<FieldDiff>) {
                 match (r_arr.get(i), a_arr.get(i)) {
                     (Some(rv), Some(av)) => json_diff(rv, av, &idx_path, out),
                     (Some(rv), None) => out.push(FieldDiff {
-                        path:     idx_path,
+                        path: idx_path,
                         recorded: json_display(rv),
-                        actual:   "(missing)".to_string(),
+                        actual: "(missing)".to_string(),
                     }),
                     (None, Some(av)) => out.push(FieldDiff {
-                        path:     idx_path,
+                        path: idx_path,
                         recorded: "(missing)".to_string(),
-                        actual:   json_display(av),
+                        actual: json_display(av),
                     }),
                     (None, None) => {}
                 }
@@ -168,9 +173,13 @@ fn json_diff(rec: &Value, act: &Value, path: &str, out: &mut Vec<FieldDiff>) {
         _ => {
             if rec != act {
                 out.push(FieldDiff {
-                    path:     if path.is_empty() { "(root)".to_string() } else { path.to_string() },
+                    path: if path.is_empty() {
+                        "(root)".to_string()
+                    } else {
+                        path.to_string()
+                    },
                     recorded: json_display(rec),
-                    actual:   json_display(act),
+                    actual: json_display(act),
                 });
             }
         }
@@ -188,8 +197,8 @@ fn child_path(parent: &str, key: &str) -> String {
 fn json_display(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
-        Value::Null      => "null".to_string(),
-        other            => other.to_string(),
+        Value::Null => "null".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -323,7 +332,9 @@ mod tests {
         let BodyComparison::JsonDivergence(diffs) = &out.body else {
             panic!("expected JsonDivergence");
         };
-        assert!(diffs.iter().any(|d| d.path == "b" && d.actual == "(missing)"));
+        assert!(diffs
+            .iter()
+            .any(|d| d.path == "b" && d.actual == "(missing)"));
     }
 
     #[test]
@@ -334,7 +345,9 @@ mod tests {
         let BodyComparison::JsonDivergence(diffs) = &out.body else {
             panic!("expected JsonDivergence");
         };
-        assert!(diffs.iter().any(|d| d.path == "b" && d.recorded == "(missing)"));
+        assert!(diffs
+            .iter()
+            .any(|d| d.path == "b" && d.recorded == "(missing)"));
     }
 
     #[test]

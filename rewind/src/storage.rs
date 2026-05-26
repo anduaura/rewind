@@ -49,8 +49,7 @@ impl Backend {
     /// Returns `None` for a plain filesystem path (caller should use `Backend::Local`).
     pub fn from_url(url: &str) -> Result<Self> {
         use object_store::{
-            aws::AmazonS3Builder, azure::MicrosoftAzureBuilder,
-            gcp::GoogleCloudStorageBuilder,
+            aws::AmazonS3Builder, azure::MicrosoftAzureBuilder, gcp::GoogleCloudStorageBuilder,
         };
         if let Some(rest) = url.strip_prefix("s3://") {
             let (bucket, prefix) = split_bucket_prefix(rest)?;
@@ -236,11 +235,9 @@ impl Backend {
 
     async fn read_lock(&self) -> Option<(String, u64)> {
         let bytes = match self {
-            Self::Local(root) => {
-                tokio::fs::read(root.join("rewind-leader.lock"))
-                    .await
-                    .ok()?
-            }
+            Self::Local(root) => tokio::fs::read(root.join("rewind-leader.lock"))
+                .await
+                .ok()?,
             Self::Remote { store, prefix } => {
                 let key = if prefix.is_empty() {
                     ObjPath::from("rewind-leader.lock")
@@ -316,7 +313,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let backend = Backend::Local(dir.path().to_path_buf());
         let data = Bytes::from("hello snapshot");
-        backend.put("team-a", "snap.rwd", data.clone()).await.unwrap();
+        backend
+            .put("team-a", "snap.rwd", data.clone())
+            .await
+            .unwrap();
         let got = backend.get("team-a", "snap.rwd").await.unwrap();
         assert_eq!(got, data);
     }
@@ -346,7 +346,10 @@ mod tests {
     async fn local_exists_true_and_false() {
         let dir = tempfile::tempdir().unwrap();
         let backend = Backend::Local(dir.path().to_path_buf());
-        backend.put("t", "snap.rwd", Bytes::from("x")).await.unwrap();
+        backend
+            .put("t", "snap.rwd", Bytes::from("x"))
+            .await
+            .unwrap();
         assert!(backend.exists("t", "snap.rwd").await);
         assert!(!backend.exists("t", "missing.rwd").await);
     }

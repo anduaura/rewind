@@ -76,7 +76,11 @@ pub async fn run(args: SearchArgs) -> Result<()> {
                 r.total_events,
             );
         }
-        println!("\n{} snapshot{} matched.", results.len(), if results.len() == 1 { "" } else { "s" });
+        println!(
+            "\n{} snapshot{} matched.",
+            results.len(),
+            if results.len() == 1 { "" } else { "s" }
+        );
     }
     Ok(())
 }
@@ -143,7 +147,11 @@ fn matches_filters(snap: &Snapshot, args: &SearchArgs) -> Option<HitSummary> {
 
     if !has_event_filter {
         // Only the service filter (or no filter at all) — include the snapshot.
-        return Some(HitSummary { http: 0, db: 0, grpc: 0 });
+        return Some(HitSummary {
+            http: 0,
+            db: 0,
+            grpc: 0,
+        });
     }
 
     for event in &snap.events {

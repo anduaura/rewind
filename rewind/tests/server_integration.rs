@@ -65,9 +65,7 @@ fn start_server(dir: &Path, port: u16, token: &str) -> ServerGuard {
     // Poll /healthz until the server is ready.
     for _ in 0..100 {
         std::thread::sleep(Duration::from_millis(50));
-        if let Ok(mut stream) =
-            std::net::TcpStream::connect(format!("127.0.0.1:{port}"))
-        {
+        if let Ok(mut stream) = std::net::TcpStream::connect(format!("127.0.0.1:{port}")) {
             // Server is listening — send a minimal HTTP request.
             let req = "GET /healthz HTTP/1.0\r\nHost: localhost\r\n\r\n";
             if stream.write_all(req.as_bytes()).is_ok() {
@@ -112,7 +110,10 @@ fn server_list_shows_uploaded_snapshot() {
     let body = ureq_get_string(&format!("{base}/snapshots"), "test-token");
     let list: serde_json::Value = serde_json::from_str(&body).expect("list response is JSON");
     assert!(list.is_array(), "expected JSON array");
-    assert!(!list.as_array().unwrap().is_empty(), "list should not be empty after upload");
+    assert!(
+        !list.as_array().unwrap().is_empty(),
+        "list should not be empty after upload"
+    );
 }
 
 #[test]
@@ -135,7 +136,10 @@ fn server_download_matches_uploaded_bytes() {
 
     // Download and compare.
     let downloaded = ureq_get_bytes(&format!("{base}/snapshots/roundtrip.rwd"), "test-token");
-    assert_eq!(downloaded, data, "downloaded bytes must match uploaded bytes");
+    assert_eq!(
+        downloaded, data,
+        "downloaded bytes must match uploaded bytes"
+    );
 }
 
 #[test]
@@ -356,14 +360,20 @@ fn gdpr_execute_redacts_matching_events() {
         .unwrap();
 
     assert!(out.status.success(), "execute should exit 0");
-    assert!(snap.exists(), "snapshot should still exist (in-place redact)");
+    assert!(
+        snap.exists(),
+        "snapshot should still exist (in-place redact)"
+    );
 
     // Verify the file is still valid JSON after redaction.
     let content = std::fs::read(&snap).unwrap();
-    let v: serde_json::Value = serde_json::from_slice(&content)
-        .expect("redacted snapshot should still be valid JSON");
+    let v: serde_json::Value =
+        serde_json::from_slice(&content).expect("redacted snapshot should still be valid JSON");
     let text = v.to_string();
-    assert!(text.contains("[REDACTED]"), "redacted marker should appear in output");
+    assert!(
+        text.contains("[REDACTED]"),
+        "redacted marker should appear in output"
+    );
 }
 
 // ── Compliance ────────────────────────────────────────────────────────────────
@@ -374,11 +384,7 @@ fn compliance_json_output_is_valid() {
     std::fs::copy(fixture("sample.rwd"), dir.path().join("snap.rwd")).unwrap();
 
     let out = Command::new(rewind_bin())
-        .args([
-            "compliance",
-            "--snapshot-dir",
-            dir.path().to_str().unwrap(),
-        ])
+        .args(["compliance", "--snapshot-dir", dir.path().to_str().unwrap()])
         .output()
         .unwrap();
 
@@ -412,8 +418,14 @@ fn compliance_markdown_output_has_summary_header() {
 
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("## Summary"), "markdown output missing ## Summary");
-    assert!(stdout.contains("## Controls"), "markdown output missing ## Controls");
+    assert!(
+        stdout.contains("## Summary"),
+        "markdown output missing ## Summary"
+    );
+    assert!(
+        stdout.contains("## Controls"),
+        "markdown output missing ## Controls"
+    );
 }
 
 #[test]
@@ -424,11 +436,7 @@ fn compliance_reports_snapshot_count() {
     std::fs::copy(fixture("sample.rwd"), dir.path().join("b.rwd")).unwrap();
 
     let out = Command::new(rewind_bin())
-        .args([
-            "compliance",
-            "--snapshot-dir",
-            dir.path().to_str().unwrap(),
-        ])
+        .args(["compliance", "--snapshot-dir", dir.path().to_str().unwrap()])
         .output()
         .unwrap();
 
@@ -456,14 +464,18 @@ fn server_write_only_token_cannot_list() {
             "agent-tok": {"team": "eng", "perm": "write"},
             "dev-tok":   {"team": "eng", "perm": "read"}
         }"#,
-    ).unwrap();
+    )
+    .unwrap();
 
     let child = Command::new(rewind_bin())
         .args([
             "server",
-            "--listen", &format!("127.0.0.1:{port}"),
-            "--storage", dir.path().to_str().unwrap(),
-            "--tokens-file", tokens_file.to_str().unwrap(),
+            "--listen",
+            &format!("127.0.0.1:{port}"),
+            "--storage",
+            dir.path().to_str().unwrap(),
+            "--tokens-file",
+            tokens_file.to_str().unwrap(),
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -489,7 +501,10 @@ fn server_write_only_token_cannot_list() {
 
     // Dev token cannot upload.
     let upload_status = ureq_post_bytes(&format!("{base}/snapshots"), "dev-tok", &data);
-    assert_eq!(upload_status, 403, "read-only token should not upload (403)");
+    assert_eq!(
+        upload_status, 403,
+        "read-only token should not upload (403)"
+    );
 }
 
 // ── Concurrent-upload correctness ─────────────────────────────────────────────
@@ -533,12 +548,8 @@ fn concurrent_uploads_all_succeed() {
             let body = Arc::clone(&data);
             std::thread::spawn(move || {
                 let name = format!("concurrent-{i:03}.rwd");
-                let status = ureq_post_bytes_named(
-                    &format!("{url}/snapshots"),
-                    "test-token",
-                    &body,
-                    &name,
-                );
+                let status =
+                    ureq_post_bytes_named(&format!("{url}/snapshots"), "test-token", &body, &name);
                 assert!(
                     status == 201,
                     "concurrent upload {i} expected 201 got {status}"
@@ -553,8 +564,7 @@ fn concurrent_uploads_all_succeed() {
 
     // Verify all N snapshots are visible in the list.
     let body = ureq_get_string(&format!("{base}/snapshots"), "test-token");
-    let list: Vec<serde_json::Value> =
-        serde_json::from_str(&body).expect("list response is JSON");
+    let list: Vec<serde_json::Value> = serde_json::from_str(&body).expect("list response is JSON");
     assert_eq!(
         list.len(),
         N,
@@ -618,7 +628,12 @@ use std::sync::Arc;
 ///
 /// Using HTTP/1.0 so the server closes the connection after each response,
 /// which lets read_to_end() terminate without needing Content-Length parsing.
-fn raw_http(method: &str, url: &str, extra_headers: &[(&str, &str)], body: &[u8]) -> (u16, Vec<u8>) {
+fn raw_http(
+    method: &str,
+    url: &str,
+    extra_headers: &[(&str, &str)],
+    body: &[u8],
+) -> (u16, Vec<u8>) {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpStream;
 
@@ -779,11 +794,7 @@ fn set_mtime_days_ago(path: &Path, days: u64) {
     drop(file);
     // Fallback: just use a minimal temp-based approach.
     let _ = std::process::Command::new("touch")
-        .args([
-            "-d",
-            &format!("{} days ago", days),
-            path.to_str().unwrap(),
-        ])
+        .args(["-d", &format!("{} days ago", days), path.to_str().unwrap()])
         .status();
     // Verify it worked; if not (Windows/non-GNU touch) skip gracefully.
     let _ = secs;

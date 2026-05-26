@@ -292,20 +292,28 @@ fn print_report(r: &GdprReport) {
     println!("  matched:  {} snapshots", r.snapshots_matched);
     if r.dry_run {
         if r.snapshots_matched > 0 {
-            println!("  action:   would redact {} event(s) across {} snapshot(s)",
-                r.events_redacted, r.snapshots_matched);
+            println!(
+                "  action:   would redact {} event(s) across {} snapshot(s)",
+                r.events_redacted, r.snapshots_matched
+            );
         } else {
             println!("  action:   no matches found");
         }
     } else {
-        println!("  redacted: {} snapshots ({} events)", r.snapshots_modified, r.events_redacted);
+        println!(
+            "  redacted: {} snapshots ({} events)",
+            r.snapshots_modified, r.events_redacted
+        );
         println!("  deleted:  {} snapshots", r.snapshots_deleted);
     }
     if r.snapshots_matched > 0 {
         println!();
         for f in &r.files {
             if f.matched {
-                println!("  {:?}  {} ({} substitutions)", f.action, f.path, f.events_redacted);
+                println!(
+                    "  {:?}  {} ({} substitutions)",
+                    f.action, f.path, f.events_redacted
+                );
             }
         }
     }

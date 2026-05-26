@@ -483,7 +483,11 @@ fn parse_http_event(
         let body_str = String::from_utf8_lossy(&raw.body_raw[..len]).into_owned();
         // Trim trailing null bytes that pad the fixed-size buffer.
         let trimmed = body_str.trim_end_matches('\0').to_string();
-        if trimmed.is_empty() { None } else { Some(trimmed) }
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
     } else {
         None
     };
