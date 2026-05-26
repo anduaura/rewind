@@ -11,6 +11,8 @@ This guide walks you through capturing and replaying your first production incid
 | Root or `CAP_BPF` | The eBPF agent needs elevated privileges to attach to the kernel |
 | Rust nightly + `bpfel-unknown-none` target | Only needed if building from source |
 
+> **Platform note:** the eBPF probe (`rewind-ebpf`) only builds and runs on **Linux**. On macOS/Windows you can build the userspace CLI for `inspect`, `replay`, `report`, etc. against existing `.rwd` snapshots, but `make build-ebpf` and `rewind record`/`rewind attach` require a Linux host (bare metal, VM, or WSL2). For the demo flow below, use a Linux VM or run inside an Ubuntu container.
+
 Check your kernel version:
 
 ```bash
@@ -33,19 +35,58 @@ rewind --help
 
 ### Option B — from source
 
+Building from source requires a Rust toolchain. If `cargo --version` already works, skip to step 2.
+
+**1. Install Rust + the components rewind needs**
+
+```bash
+# Install rustup (Rust toolchain manager)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"          # adds cargo to PATH for the current shell
+
+# Stable toolchain (for the userspace CLI)
+rustup toolchain install stable
+
+# Nightly toolchain + rust-src (needed for -Z build-std=core when compiling the eBPF probe)
+rustup toolchain install nightly
+rustup component add rust-src --toolchain nightly
+
+# Linux only — eBPF target + linker
+rustup target add bpfel-unknown-none --toolchain nightly
+cargo install bpf-linker             # installs the LLVM-based linker aya uses
+```
+
+On Debian/Ubuntu you'll also need a few system packages for `bpf-linker` to build:
+
+```bash
+sudo apt install -y build-essential pkg-config libssl-dev llvm clang
+```
+
+**2. Build**
+
 ```bash
 git clone https://github.com/anduaura/rewind
 cd rewind
 
-# Build the eBPF probe (requires nightly Rust)
+# Linux: build the eBPF probe, then the CLI (which embeds the probe)
 make build-ebpf
-
-# Build the CLI (embeds the eBPF binary)
 make build-userspace
 
-# The binary is at rewind/target/release/rewind
-sudo cp rewind/target/release/rewind /usr/local/bin/
+# macOS / Windows: skip make build-ebpf and build the userspace CLI only.
+# It can inspect, replay, report on, etc. existing .rwd snapshots, but cannot record.
+cargo build --release -p rewind
+
+# The binary is at target/release/rewind
+sudo cp target/release/rewind /usr/local/bin/
 ```
+
+**3. Verify**
+
+```bash
+rewind --help
+```
+
+> **`/bin/sh: cargo: command not found`** — rustup installs cargo into `~/.cargo/bin`, which is added to PATH on shell start. Either open a new terminal or run `source "$HOME/.cargo/env"` in the current one.
 
 ## Step 1 — start your application
 
@@ -250,6 +291,40 @@ rewind timeline incident.rwd --format ascii
 ```
 
 ## Troubleshooting
+
+### `cargo: command not found` when running `make build-ebpf`
+
+Rust isn't installed (or not on PATH). Install rustup and reload the shell:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+cargo --version   # should now print
+```
+
+Then install the nightly toolchain and `bpfel-unknown-none` target as shown in [Option B — from source](#option-b--from-source).
+
+### `error: "rust-src" is not installed for the toolchain "nightly"`
+
+The eBPF build uses `-Z build-std=core`, which needs the Rust source. Add it:
+
+```bash
+rustup component add rust-src --toolchain nightly
+```
+
+### `error: linker 'bpf-linker' not found`
+
+Install the linker aya uses to produce eBPF objects:
+
+```bash
+cargo install bpf-linker
+```
+
+If the install itself fails on Linux, install LLVM dev headers first: `sudo apt install -y llvm clang libssl-dev pkg-config build-essential`.
+
+### `make build-ebpf` on macOS
+
+The eBPF target only builds on Linux. Use a Linux VM, a dev container, or WSL2 on Windows. On macOS you can still `cargo build --release -p rewind` to get a CLI capable of `inspect`, `replay`, `report`, etc. on existing snapshots.
 
 ### `failed to load eBPF object`
 
