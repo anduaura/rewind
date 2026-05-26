@@ -414,22 +414,22 @@ footer {
           <span class="terminal-title">bash</span>
         </div>
         <div class="terminal-body">
-<span class="dim"># 1. Attach to any running Docker Compose stack</span>
-<span class="prompt">$</span> <span class="cmd">sudo rewind attach</span>
-<span class="out">Detected 2 service(s): api, worker</span>
-<span class="out">Recording… press Ctrl+C to stop, or run <span class="hi">`rewind flush`</span> to snapshot</span>
-
-<span class="dim"># 2. After an alert fires, snapshot the last 5 minutes</span>
-<span class="prompt">$</span> <span class="cmd">rewind flush --window 5m --output incident.rwd</span>
-<span class="out">Flushed 47 events to incident.rwd</span>
-
-<span class="dim"># 3. Replay it locally — deterministically</span>
-<span class="prompt">$</span> <span class="cmd">rewind replay incident.rwd --compose docker-compose.yml</span>
-<span class="out">  trigger: POST /orders</span>
-<span class="out">  clock:   @2026-04-24 10:23:01  (libfaketime)</span>
-<span class="out">  mocking: 6 outbound responses</span>
-<span class="out">  status:  201 == 201 <span class="ok">✓</span></span>
-<span class="out">  body:    match <span class="ok">✓</span></span>
+<span class="dim"># 1. Attach to any running Docker Compose stack</span><br>
+<span class="prompt">$</span> <span class="cmd">sudo rewind attach</span><br>
+<span class="out">Detected 2 service(s): api, worker</span><br>
+<span class="out">Recording… press Ctrl+C to stop, or run <span class="hi">`rewind flush`</span> to snapshot</span><br>
+<br>
+<span class="dim"># 2. After an alert fires, snapshot the last 5 minutes</span><br>
+<span class="prompt">$</span> <span class="cmd">rewind flush --window 5m --output incident.rwd</span><br>
+<span class="out">Flushed 47 events to incident.rwd</span><br>
+<br>
+<span class="dim"># 3. Replay it locally — deterministically</span><br>
+<span class="prompt">$</span> <span class="cmd">rewind replay incident.rwd --compose docker-compose.yml</span><br>
+<span class="out">  trigger: POST /orders</span><br>
+<span class="out">  clock:   @2026-04-24 10:23:01  (libfaketime)</span><br>
+<span class="out">  mocking: 6 outbound responses</span><br>
+<span class="out">  status:  201 == 201 <span class="ok">✓</span></span><br>
+<span class="out">  body:    match <span class="ok">✓</span></span><br>
 <span class="ok">  Exit 0 — replay matches recorded response</span>
         </div>
       </div>
