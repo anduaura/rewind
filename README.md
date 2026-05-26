@@ -242,7 +242,34 @@ rewind/
   benches/       criterion benchmarks
 examples/
   docker-compose-demo/   two-service Flask demo (api + worker + Postgres + Redis)
+agent-harness/           agentic debugging demo (see below)
 ```
+
+## Agentic debugging
+
+A `.rwd` snapshot isn't just a record of an incident — it's the incident itself,
+frozen and re-runnable. That changes what an AI agent can do: instead of
+producing a *plausible narrative* of what probably went wrong, it can
+*experiment*:
+
+1. Replay the incident → observe the failure deterministically
+2. Form a hypothesis
+3. Patch the code, replay again → did the failure disappear?
+4. If yes: verified fix. If no: iterate.
+
+The `agent-harness/` directory contains a self-contained demo of this loop. A
+seeded 204-contract-change bug causes a `JSONDecodeError` in the API service.
+The harness confirms it reproduces, asks Claude to propose a patch, applies it
+to a sandbox copy, replays again, and reports pass/fail.
+
+```bash
+cd agent-harness
+pip install -r requirements.txt
+export ANTHROPIC_API_KEY=sk-...
+python agent.py
+```
+
+See [`agent-harness/README.md`](agent-harness/README.md) for the full walkthrough.
 
 ## Comparable tools
 
