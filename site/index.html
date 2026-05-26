@@ -78,6 +78,15 @@ nav {
 @media (max-width: 640px) {
   .nav-links .hide-mobile { display: none; }
 }
+.split-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 64px;
+  align-items: center;
+}
+@media (max-width: 768px) {
+  .split-grid { grid-template-columns: 1fr; gap: 40px; }
+}
 
 /* ── Hero ──────────────────────────────────────────────────────────────────── */
 .hero {
@@ -590,7 +599,7 @@ footer {
 
 <!-- ── Zero instrumentation ───────────────────────────────────────────────── -->
 <section>
-  <div class="wrap" style="display:grid;grid-template-columns:1fr 1fr;gap:64px;align-items:center">
+  <div class="wrap split-grid">
     <div class="reveal">
       <div class="section-label">Zero instrumentation</div>
       <h2>Attaches to<br>running containers.</h2>
@@ -618,18 +627,18 @@ footer {
           <span class="terminal-title">zero changes required</span>
         </div>
         <div class="terminal-body" style="font-size:12.5px">
-<span class="dim"># No changes to your application</span>
-<span class="dim"># No changes to your Docker image</span>
-<span class="dim"># No sidecar, no library, no SDK</span>
+<span class="dim"># No changes to your application</span><br>
+<span class="dim"># No changes to your Docker image</span><br>
+<span class="dim"># No sidecar, no library, no SDK</span><br>
 <br>
-<span class="dim"># Just attach to the running stack</span>
-<span class="prompt">$</span> <span class="cmd">sudo rewind attach -f docker-compose.yml</span>
-<span class="out">Attaching to: api, worker, db-proxy</span>
-<span class="out">eBPF probes loaded (CO-RE, kernel 6.1.72)</span>
-<span class="out">Listening on tcp_sendmsg + tcp_recvmsg</span>
-<span class="ok">Recording…</span>
+<span class="dim"># Just attach to the running stack</span><br>
+<span class="prompt">$</span> <span class="cmd">sudo rewind attach -f docker-compose.yml</span><br>
+<span class="out">Attaching to: api, worker, db-proxy</span><br>
+<span class="out">eBPF probes loaded (CO-RE, kernel 6.1.72)</span><br>
+<span class="out">Listening on tcp_sendmsg + tcp_recvmsg</span><br>
+<span class="ok">Recording…</span><br>
 <br>
-<span class="dim"># Works on any Linux container</span>
+<span class="dim"># Works on any Linux container</span><br>
 <span class="dim"># Python ✓  Go ✓  Java ✓  Node ✓  Rust ✓</span>
         </div>
       </div>
