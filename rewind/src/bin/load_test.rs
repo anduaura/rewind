@@ -99,7 +99,7 @@ fn make_snapshot(size_kb: usize) -> Vec<u8> {
     let mut v = serde_json::to_vec_pretty(&base).unwrap();
     let target = size_kb * 1024;
     if v.len() < target {
-        v.extend(std::iter::repeat(b' ').take(target - v.len()));
+        v.extend(std::iter::repeat_n(b' ', target - v.len()));
     }
     v
 }
@@ -116,6 +116,7 @@ fn percentile(sorted: &[f64], pct: f64) -> f64 {
 
 // ── Virtual user loop ─────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn virtual_user(
     vu_id: usize,
     client: Client,

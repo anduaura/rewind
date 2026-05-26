@@ -806,7 +806,7 @@ async fn ui_snapshot_detail(
     let (mut http_cnt, mut db_cnt, mut grpc_cnt, mut sys_cnt) = (0usize, 0usize, 0usize, 0usize);
     let recorded_at = format_ts_ns(snap.recorded_at_ns);
     let services_esc = esc(&snap.services.join(", "));
-    let base_ts = snap.events.first().map(|e| ev_ts(e)).unwrap_or(0);
+    let base_ts = snap.events.first().map(ev_ts).unwrap_or(0);
 
     let mut ev_rows = String::new();
     for (i, ev) in snap.events.iter().enumerate() {
@@ -911,12 +911,10 @@ async fn ui_snapshot_detail(
     let has_diagram = !snap.events.is_empty();
 
     let diagram_html = if has_diagram {
-        format!(
-            r#"<div class="diagram-section">
+        r#"<div class="diagram-section">
   <div class="section-title">Sequence Diagram <button class="copy-btn" onclick="copyMermaid()">Copy source</button></div>
   <div class="diagram-wrap" id="diagram"><div style="color:var(--muted);font-size:12px">Loading diagram…</div></div>
-</div>"#
-        )
+</div>"#.to_string()
     } else {
         String::new()
     };
