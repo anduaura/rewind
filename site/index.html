@@ -1,0 +1,932 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rewind — Deterministic incident replay for distributed systems</title>
+<meta name="description" content="Capture inter-service HTTP traffic, DB calls, and syscalls with eBPF. Replay the exact production incident on your laptop — deterministically, with zero code changes.">
+<meta property="og:title" content="rewind — Deterministic incident replay for distributed systems">
+<meta property="og:description" content="eBPF-powered capture of production incidents. Replay them locally, deterministically. Zero instrumentation required.">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⏪</text></svg>">
+<style>
+/* ── Reset & tokens ────────────────────────────────────────────────────────── */
+:root {
+  --bg:        #0a0d14;
+  --surface:   #10141f;
+  --surface2:  #161c2d;
+  --border:    #1e2640;
+  --text:      #e2e8f0;
+  --muted:     #7c8db0;
+  --accent:    #3b82f6;
+  --accent2:   #6366f1;
+  --green:     #22c55e;
+  --amber:     #f59e0b;
+  --red:       #ef4444;
+  --purple:    #a855f7;
+  --teal:      #14b8a6;
+  --r:         8px;
+  --font:      system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono:      'Cascadia Code', 'Fira Code', 'Menlo', monospace;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre { font-family: var(--mono); }
+img, svg { display: block; max-width: 100%; }
+
+/* ── Layout ────────────────────────────────────────────────────────────────── */
+.wrap  { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+.wrap-narrow { max-width: 760px; margin: 0 auto; padding: 0 24px; }
+section { padding: 96px 0; }
+section.alt { background: var(--surface); }
+
+/* ── Nav ───────────────────────────────────────────────────────────────────── */
+nav {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(10,13,20,0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+  height: 56px;
+  display: flex; align-items: center; gap: 32px;
+}
+.nav-logo {
+  font-weight: 700; font-size: 18px; letter-spacing: -.4px;
+  color: var(--text); text-decoration: none;
+}
+.nav-logo span { color: var(--accent); }
+.nav-links { display: flex; gap: 24px; align-items: center; margin-left: auto; }
+.nav-links a { font-size: 14px; color: var(--muted); }
+.nav-links a:hover { color: var(--text); text-decoration: none; }
+.nav-cta {
+  background: var(--accent); color: #fff !important;
+  padding: 6px 16px; border-radius: 6px; font-weight: 500;
+  font-size: 14px;
+}
+.nav-cta:hover { background: #2563eb; text-decoration: none !important; }
+@media (max-width: 640px) {
+  .nav-links .hide-mobile { display: none; }
+}
+
+/* ── Hero ──────────────────────────────────────────────────────────────────── */
+.hero {
+  padding: 100px 0 80px;
+  text-align: center;
+  background: radial-gradient(ellipse 80% 60% at 50% -10%, rgba(59,130,246,.12) 0%, transparent 70%);
+}
+.hero-badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: rgba(59,130,246,.1); border: 1px solid rgba(59,130,246,.2);
+  color: var(--accent); border-radius: 100px;
+  padding: 4px 14px; font-size: 13px; font-weight: 500;
+  margin-bottom: 28px;
+}
+.hero-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+h1 {
+  font-size: clamp(2.2rem, 5vw, 3.6rem);
+  font-weight: 800;
+  letter-spacing: -.03em;
+  line-height: 1.1;
+  margin-bottom: 20px;
+  background: linear-gradient(135deg, #fff 40%, #7c8db0 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.hero-sub {
+  font-size: 1.15rem; color: var(--muted); max-width: 620px;
+  margin: 0 auto 36px; line-height: 1.7;
+}
+.hero-actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 12px 24px; border-radius: var(--r); font-size: 15px;
+  font-weight: 600; cursor: pointer; border: none;
+  text-decoration: none !important; transition: all .15s;
+}
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: #2563eb; transform: translateY(-1px); }
+.btn-ghost {
+  background: transparent; color: var(--text);
+  border: 1px solid var(--border);
+}
+.btn-ghost:hover { border-color: var(--muted); transform: translateY(-1px); }
+
+/* ── Terminal ──────────────────────────────────────────────────────────────── */
+.terminal-wrap { margin: 56px auto 0; max-width: 720px; }
+.terminal {
+  background: #0d1117;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 24px 80px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.04);
+  text-align: left;
+}
+.terminal-bar {
+  background: #161b22;
+  padding: 10px 16px;
+  display: flex; align-items: center; gap: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.terminal-bar .dot { width: 12px; height: 12px; border-radius: 50%; }
+.dot-red  { background: #ff5f57; }
+.dot-yel  { background: #ffbd2e; }
+.dot-grn  { background: #28c840; }
+.terminal-title { font-size: 12px; color: var(--muted); margin-left: auto; margin-right: auto; }
+.terminal-body { padding: 20px 24px; font-family: var(--mono); font-size: 13.5px; line-height: 1.8; }
+.terminal-body .prompt { color: var(--green); }
+.terminal-body .cmd    { color: var(--text); }
+.terminal-body .out    { color: var(--muted); }
+.terminal-body .ok     { color: var(--green); }
+.terminal-body .hi     { color: var(--accent); }
+.terminal-body .dim    { color: #4a5568; }
+
+/* ── Section headings ──────────────────────────────────────────────────────── */
+.section-label {
+  font-size: 12px; font-weight: 600; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--accent);
+  margin-bottom: 12px;
+}
+h2 {
+  font-size: clamp(1.6rem, 3vw, 2.4rem);
+  font-weight: 700; letter-spacing: -.02em; line-height: 1.2;
+  margin-bottom: 16px;
+}
+.section-sub { font-size: 1.05rem; color: var(--muted); max-width: 580px; line-height: 1.7; }
+
+/* ── Problem ───────────────────────────────────────────────────────────────── */
+.problem-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 20px; margin-top: 48px;
+}
+.problem-card {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 28px;
+}
+.problem-icon { font-size: 28px; margin-bottom: 14px; }
+.problem-card h3 { font-size: 1rem; font-weight: 600; margin-bottom: 8px; }
+.problem-card p { font-size: .9rem; color: var(--muted); line-height: 1.6; }
+
+/* ── Steps ─────────────────────────────────────────────────────────────────── */
+.steps {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 0; margin-top: 56px; position: relative;
+}
+.steps::before {
+  content: ''; position: absolute;
+  top: 28px; left: 10%; right: 10%;
+  height: 1px; background: linear-gradient(90deg, transparent, var(--border) 20%, var(--border) 80%, transparent);
+}
+.step { padding: 0 24px; text-align: center; position: relative; }
+.step-num {
+  width: 56px; height: 56px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; font-weight: 800; color: #fff;
+  margin: 0 auto 20px; position: relative; z-index: 1;
+  box-shadow: 0 0 0 8px var(--bg);
+}
+.step h3 { font-size: 1.1rem; font-weight: 700; margin-bottom: 10px; }
+.step p  { font-size: .9rem; color: var(--muted); line-height: 1.6; }
+.step .step-detail {
+  margin-top: 16px; background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 12px; font-family: var(--mono);
+  font-size: 11.5px; color: var(--muted); text-align: left; line-height: 1.7;
+}
+.step .step-detail .hi { color: var(--accent); }
+.step .step-detail .ok { color: var(--green); }
+
+/* ── Capture grid ──────────────────────────────────────────────────────────── */
+.capture-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px; margin-top: 48px;
+}
+.capture-card {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 24px 20px;
+  transition: border-color .2s;
+}
+.capture-card:hover { border-color: rgba(59,130,246,.4); }
+.capture-card .cap-icon { font-size: 24px; margin-bottom: 12px; }
+.capture-card h3 { font-size: .95rem; font-weight: 600; margin-bottom: 6px; }
+.capture-card p  { font-size: .85rem; color: var(--muted); line-height: 1.5; }
+.tag {
+  display: inline-block; font-size: 10px; font-weight: 600;
+  padding: 2px 7px; border-radius: 4px; letter-spacing: .3px;
+  text-transform: uppercase; margin-top: 10px;
+}
+.tag-blue   { background: rgba(59,130,246,.15); color: var(--accent); }
+.tag-purple { background: rgba(168,85,247,.15);  color: var(--purple); }
+.tag-teal   { background: rgba(20,184,166,.15);  color: var(--teal); }
+.tag-green  { background: rgba(34,197,94,.15);   color: var(--green); }
+
+/* ── Coverage / perf tables ────────────────────────────────────────────────── */
+.tables-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-top: 48px;
+}
+@media (max-width: 680px) { .tables-row { grid-template-columns: 1fr; } }
+.tbl-wrap h3 { font-size: 1rem; font-weight: 600; margin-bottom: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-size: .8rem; }
+table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+th {
+  text-align: left; padding: 8px 12px;
+  color: var(--muted); font-size: .8rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .05em;
+  border-bottom: 1px solid var(--border);
+}
+td {
+  padding: 10px 12px; border-bottom: 1px solid rgba(30,38,64,.6);
+  vertical-align: middle;
+}
+tr:last-child td { border-bottom: none; }
+.pct { color: var(--green); font-weight: 600; font-family: var(--mono); }
+.metric { font-family: var(--mono); font-size: .85rem; color: var(--accent); }
+
+/* ── Enterprise ────────────────────────────────────────────────────────────── */
+.ent-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px; margin-top: 48px;
+}
+.ent-card {
+  border: 1px solid var(--border); border-radius: var(--r); padding: 22px 20px;
+  background: var(--surface2); transition: border-color .2s;
+}
+.ent-card:hover { border-color: rgba(59,130,246,.35); }
+.ent-card .ent-icon { font-size: 22px; margin-bottom: 10px; }
+.ent-card h3 { font-size: .95rem; font-weight: 600; margin-bottom: 6px; }
+.ent-card p  { font-size: .84rem; color: var(--muted); line-height: 1.55; }
+
+/* ── Compare ───────────────────────────────────────────────────────────────── */
+.compare-wrap { overflow-x: auto; margin-top: 48px; }
+.compare-wrap table th:first-child,
+.compare-wrap table td:first-child { font-weight: 600; min-width: 130px; }
+.check { color: var(--green); }
+.cross { color: #4a5568; }
+.hi-row td { background: rgba(59,130,246,.05); }
+
+/* ── Quickstart ────────────────────────────────────────────────────────────── */
+.qs-steps { margin-top: 40px; display: flex; flex-direction: column; gap: 16px; }
+.qs-step {
+  display: flex; gap: 20px; align-items: flex-start;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 20px 24px;
+}
+.qs-num {
+  min-width: 28px; height: 28px; border-radius: 50%;
+  background: var(--accent); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; flex-shrink: 0; margin-top: 1px;
+}
+.qs-step h4 { font-size: .95rem; font-weight: 600; margin-bottom: 6px; }
+.qs-step p  { font-size: .88rem; color: var(--muted); margin-bottom: 10px; }
+.code-block {
+  background: #0d1117; border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px 16px; font-family: var(--mono); font-size: 13px;
+  color: var(--text); position: relative; overflow-x: auto;
+}
+.code-block .comment { color: #4a5568; }
+.code-block .prompt  { color: var(--green); user-select: none; }
+.copy-btn {
+  position: absolute; top: 8px; right: 8px;
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--muted); border-radius: 4px; padding: 3px 10px;
+  font-size: 11px; cursor: pointer; font-family: var(--font);
+}
+.copy-btn:hover { color: var(--text); }
+
+/* ── Install pill ───────────────────────────────────────────────────────────── */
+.install-pill {
+  display: inline-flex; align-items: center; gap: 12px;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 100px; padding: 10px 10px 10px 20px;
+  font-family: var(--mono); font-size: 13.5px; color: var(--text);
+  margin-top: 20px;
+}
+.install-pill .copy-inline {
+  background: var(--accent); color: #fff; border: none;
+  border-radius: 100px; padding: 5px 14px; font-size: 12px;
+  font-weight: 600; cursor: pointer; font-family: var(--font);
+}
+
+/* ── CTA band ───────────────────────────────────────────────────────────────── */
+.cta-band {
+  background: linear-gradient(135deg, rgba(59,130,246,.12) 0%, rgba(99,102,241,.12) 100%);
+  border-top: 1px solid rgba(59,130,246,.15);
+  border-bottom: 1px solid rgba(59,130,246,.15);
+  padding: 80px 0; text-align: center;
+}
+.cta-band h2 { margin-bottom: 12px; }
+.cta-band p { color: var(--muted); margin-bottom: 32px; }
+.cta-band .hero-actions { justify-content: center; }
+
+/* ── Footer ─────────────────────────────────────────────────────────────────── */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 48px 0;
+}
+.footer-inner {
+  display: flex; align-items: flex-start; gap: 48px; flex-wrap: wrap;
+}
+.footer-brand { flex: 0 0 200px; }
+.footer-brand .logo { font-size: 18px; font-weight: 700; letter-spacing: -.3px; margin-bottom: 8px; }
+.footer-brand .logo span { color: var(--accent); }
+.footer-brand p { font-size: .85rem; color: var(--muted); line-height: 1.6; }
+.footer-col h4 { font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 14px; }
+.footer-col ul { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.footer-col ul a { font-size: .88rem; color: var(--muted); }
+.footer-col ul a:hover { color: var(--text); text-decoration: none; }
+.footer-bottom {
+  margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+}
+.footer-bottom p { font-size: .83rem; color: var(--muted); }
+
+/* ── Reveal animations ──────────────────────────────────────────────────────── */
+.reveal { opacity: 0; transform: translateY(24px); transition: opacity .5s ease, transform .5s ease; }
+.reveal.visible { opacity: 1; transform: none; }
+
+/* ── Toast ──────────────────────────────────────────────────────────────────── */
+#toast {
+  position: fixed; bottom: 24px; right: 24px; z-index: 1000;
+  background: var(--surface2); border: 1px solid var(--green); color: var(--green);
+  border-radius: 8px; padding: 10px 18px; font-size: 13px;
+  opacity: 0; transition: opacity .3s; pointer-events: none;
+}
+</style>
+</head>
+
+<body>
+
+<!-- ── Nav ───────────────────────────────────────────────────────────────── -->
+<nav>
+  <a href="/" class="nav-logo">re<span>wind</span></a>
+  <div class="nav-links">
+    <a href="#how-it-works" class="hide-mobile">How it works</a>
+    <a href="#enterprise"   class="hide-mobile">Enterprise</a>
+    <a href="https://github.com/anduaura/rewind/tree/main/docs" class="hide-mobile">Docs</a>
+    <a href="https://github.com/anduaura/rewind">GitHub</a>
+    <a href="https://github.com/anduaura/rewind/blob/main/docs/getting-started.md" class="nav-cta">Get started →</a>
+  </div>
+</nav>
+
+<!-- ── Hero ──────────────────────────────────────────────────────────────── -->
+<section class="hero">
+  <div class="wrap">
+    <div class="hero-badge">
+      <span class="dot"></span>
+      Open source &middot; Apache 2.0
+    </div>
+
+    <h1>Every production incident,<br>reproducible on your laptop.</h1>
+
+    <p class="hero-sub">
+      rewind captures inter-service HTTP traffic, database calls, and
+      non-deterministic syscalls using eBPF — then replays the exact causal
+      chain locally, deterministically. Zero code changes. Zero instrumentation.
+    </p>
+
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="https://github.com/anduaura/rewind/blob/main/docs/getting-started.md">
+        Get started in 15 min →
+      </a>
+      <a class="btn btn-ghost" href="https://github.com/anduaura/rewind">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        View on GitHub
+      </a>
+    </div>
+
+    <div class="terminal-wrap">
+      <div class="terminal">
+        <div class="terminal-bar">
+          <span class="dot dot-red"></span>
+          <span class="dot dot-yel"></span>
+          <span class="dot dot-grn"></span>
+          <span class="terminal-title">bash</span>
+        </div>
+        <div class="terminal-body">
+<span class="dim"># 1. Attach to any running Docker Compose stack</span>
+<span class="prompt">$</span> <span class="cmd">sudo rewind attach</span>
+<span class="out">Detected 2 service(s): api, worker</span>
+<span class="out">Recording… press Ctrl+C to stop, or run <span class="hi">`rewind flush`</span> to snapshot</span>
+
+<span class="dim"># 2. After an alert fires, snapshot the last 5 minutes</span>
+<span class="prompt">$</span> <span class="cmd">rewind flush --window 5m --output incident.rwd</span>
+<span class="out">Flushed 47 events to incident.rwd</span>
+
+<span class="dim"># 3. Replay it locally — deterministically</span>
+<span class="prompt">$</span> <span class="cmd">rewind replay incident.rwd --compose docker-compose.yml</span>
+<span class="out">  trigger: POST /orders</span>
+<span class="out">  clock:   @2026-04-24 10:23:01  (libfaketime)</span>
+<span class="out">  mocking: 6 outbound responses</span>
+<span class="out">  status:  201 == 201 <span class="ok">✓</span></span>
+<span class="out">  body:    match <span class="ok">✓</span></span>
+<span class="ok">  Exit 0 — replay matches recorded response</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Problem ────────────────────────────────────────────────────────────── -->
+<section class="alt">
+  <div class="wrap">
+    <div class="section-label">The problem</div>
+    <h2>Logs and traces tell you <em>what</em> happened.<br>They don't let you run it again.</h2>
+    <p class="section-sub">
+      When a production incident occurs in a microservices system, the state is gone, the timing is gone,
+      and "works on my machine" is the default outcome.
+    </p>
+    <div class="problem-grid reveal">
+      <div class="problem-card">
+        <div class="problem-icon">🕳️</div>
+        <h3>State is gone</h3>
+        <p>The Postgres rows, Redis keys, and in-memory state that caused the failure have already changed by the time you look.</p>
+      </div>
+      <div class="problem-card">
+        <div class="problem-icon">⏱️</div>
+        <h3>Timing is gone</h3>
+        <p>Race conditions, timeouts, and clock-sensitive code paths can't be reproduced without the exact wall-clock state from the incident.</p>
+      </div>
+      <div class="problem-card">
+        <div class="problem-icon">🤷</div>
+        <h3>Works on my machine</h3>
+        <p>Staging has different data, different traffic, and different infrastructure. The bug only manifests in production, where you can't attach a debugger.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── How it works ───────────────────────────────────────────────────────── -->
+<section id="how-it-works">
+  <div class="wrap">
+    <div class="section-label">How it works</div>
+    <h2>Record in production. Replay anywhere.</h2>
+    <p class="section-sub">
+      A two-phase approach: an eBPF agent captures the causal chain in a bounded ring buffer,
+      and the replay engine re-executes it deterministically — controlling clock, randomness, and network.
+    </p>
+    <div class="steps reveal">
+      <div class="step">
+        <div class="step-num">1</div>
+        <h3>Attach</h3>
+        <p>The eBPF agent attaches to running containers without restarts, code changes, or sidecars. Works with any language and any framework.</p>
+        <div class="step-detail">
+          <span class="hi">tcp_sendmsg</span> kprobe captures HTTP + DB<br>
+          <span class="hi">sys_exit</span> tracepoint captures syscalls<br>
+          Ring buffer holds ~5 min of traffic
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <h3>Flush</h3>
+        <p>When an alert fires, flush the ring buffer to a <code>.rwd</code> snapshot. Nothing is written to disk until you trigger it.</p>
+        <div class="step-detail">
+          <span class="hi">rewind flush --window 5m</span><br>
+          <span class="ok">Flushed 47 events to incident.rwd</span><br>
+          <span style="color:#4a5568">~5-10 MB compressed</span>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <h3>Replay</h3>
+        <p>The replay engine overrides the clock, intercepts outbound calls, and re-fires the triggering request — deterministically.</p>
+        <div class="step-detail">
+          Clock → <span class="hi">libfaketime</span> volume-mounted<br>
+          Network → mock server returns recorded responses<br>
+          <span class="ok">Exit 0 on match · Exit 1 on divergence</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── What gets captured ─────────────────────────────────────────────────── -->
+<section class="alt">
+  <div class="wrap">
+    <div class="section-label">Capture coverage</div>
+    <h2>The full causal chain, not just HTTP logs.</h2>
+    <p class="section-sub">
+      Most incidents involve more than one service call. rewind captures everything
+      that participated in the failure — correlated by W3C <code>traceparent</code> headers.
+    </p>
+    <div class="capture-grid reveal">
+      <div class="capture-card">
+        <div class="cap-icon">🌐</div>
+        <h3>HTTP / REST</h3>
+        <p>Method, path, status, headers, body (opt-in), and W3C traceparent for cross-service correlation.</p>
+        <span class="tag tag-blue">inbound + outbound</span>
+      </div>
+      <div class="capture-card">
+        <div class="cap-icon">🔌</div>
+        <h3>gRPC</h3>
+        <p>HTTP/2 HEADERS frame parsing via HPACK — service and method paths extracted without decoding protobufs.</p>
+        <span class="tag tag-teal">HTTP/2 wire</span>
+      </div>
+      <div class="capture-card">
+        <div class="cap-icon">🐘</div>
+        <h3>Postgres</h3>
+        <p>Wire protocol queries and responses, including DataRow decoding for touched rows — without a DB proxy.</p>
+        <span class="tag tag-purple">wire protocol</span>
+      </div>
+      <div class="capture-card">
+        <div class="cap-icon">⚡</div>
+        <h3>Redis</h3>
+        <p>RESP protocol commands and replies. GET, SET, LPUSH, ZADD — every call correlated with its response.</p>
+        <span class="tag tag-purple">RESP wire</span>
+      </div>
+      <div class="capture-card">
+        <div class="cap-icon">🗄️</div>
+        <h3>MySQL &amp; MongoDB</h3>
+        <p>MySQL wire protocol and MongoDB BSON framing — captured at the socket level via port-matched eBPF probes.</p>
+        <span class="tag tag-purple">wire protocol</span>
+      </div>
+      <div class="capture-card">
+        <div class="cap-icon">🕰️</div>
+        <h3>Clock &amp; random</h3>
+        <p><code>clock_gettime</code> and <code>getrandom</code> return values captured via <code>sys_exit</code> tracepoint and replayed deterministically.</p>
+        <span class="tag tag-green">non-determinism</span>
+      </div>
+    </div>
+
+    <div class="tables-row reveal" style="margin-top:56px">
+      <div class="tbl-wrap">
+        <h3>Incident coverage</h3>
+        <table>
+          <thead><tr><th>What's captured</th><th>Coverage</th></tr></thead>
+          <tbody>
+            <tr><td>HTTP traffic only</td><td class="pct">~40–50%</td></tr>
+            <tr><td>+ DB wire protocol</td><td class="pct">~75%</td></tr>
+            <tr><td>+ Touched row snapshot</td><td class="pct">~90%</td></tr>
+            <tr><td>+ Full DB snapshot (opt-in)</td><td class="pct">~95%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="tbl-wrap">
+        <h3>Performance overhead</h3>
+        <table>
+          <thead><tr><th>Metric</th><th>Impact</th></tr></thead>
+          <tbody>
+            <tr><td>tcp_sendmsg kprobe</td><td class="metric">&lt; 1 µs / call</td></tr>
+            <tr><td>Ring buffer write</td><td class="metric">~200 ns</td></tr>
+            <tr><td>CPU at 1,000 req/s</td><td class="metric">&lt; 0.5% core</td></tr>
+            <tr><td>Memory (200k events)</td><td class="metric">~50–100 MB</td></tr>
+            <tr><td>Flush (5 min window)</td><td class="metric">~5–10 MB</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Zero instrumentation ───────────────────────────────────────────────── -->
+<section>
+  <div class="wrap" style="display:grid;grid-template-columns:1fr 1fr;gap:64px;align-items:center">
+    <div class="reveal">
+      <div class="section-label">Zero instrumentation</div>
+      <h2>Attaches to<br>running containers.</h2>
+      <p style="color:var(--muted);line-height:1.7;margin-bottom:24px">
+        The eBPF agent loads into the Linux kernel and attaches kprobes to
+        <code>tcp_sendmsg</code> and <code>tcp_recvmsg</code> — without restarting containers,
+        injecting sidecars, or changing a single line of application code.
+      </p>
+      <p style="color:var(--muted);line-height:1.7;margin-bottom:24px">
+        It works with any language, any framework, and any runtime. Python, Go, Java, Node,
+        Rust — all captured identically at the socket layer.
+      </p>
+      <p style="color:var(--muted);line-height:1.7">
+        CO-RE (Compile Once, Run Everywhere) field access means the same binary runs on
+        Linux 5.10 through 6.x on x86_64 and arm64 — no recompilation for different
+        kernel versions.
+      </p>
+    </div>
+    <div class="reveal">
+      <div class="terminal">
+        <div class="terminal-bar">
+          <span class="dot dot-red"></span>
+          <span class="dot dot-yel"></span>
+          <span class="dot dot-grn"></span>
+          <span class="terminal-title">zero changes required</span>
+        </div>
+        <div class="terminal-body" style="font-size:12.5px">
+<span class="dim"># No changes to your application</span>
+<span class="dim"># No changes to your Docker image</span>
+<span class="dim"># No sidecar, no library, no SDK</span>
+<br>
+<span class="dim"># Just attach to the running stack</span>
+<span class="prompt">$</span> <span class="cmd">sudo rewind attach -f docker-compose.yml</span>
+<span class="out">Attaching to: api, worker, db-proxy</span>
+<span class="out">eBPF probes loaded (CO-RE, kernel 6.1.72)</span>
+<span class="out">Listening on tcp_sendmsg + tcp_recvmsg</span>
+<span class="ok">Recording…</span>
+<br>
+<span class="dim"># Works on any Linux container</span>
+<span class="dim"># Python ✓  Go ✓  Java ✓  Node ✓  Rust ✓</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Enterprise ─────────────────────────────────────────────────────────── -->
+<section class="alt" id="enterprise">
+  <div class="wrap">
+    <div class="section-label">Enterprise</div>
+    <h2>Built for regulated industries.</h2>
+    <p class="section-sub">
+      The agent and CLI are open source (Apache 2.0). Enterprise features are available
+      on the hosted collection plane and in the self-hosted server.
+    </p>
+    <div class="ent-grid reveal">
+      <div class="ent-card">
+        <div class="ent-icon">🔐</div>
+        <h3>Encryption at rest</h3>
+        <p>AES-256-GCM via <code>age</code>. <code>--key</code> flag or <code>REWIND_SNAPSHOT_KEY</code> env. SOC 2 / ISO 27001 compliant.</p>
+      </div>
+      <div class="ent-card">
+        <div class="ent-icon">🔑</div>
+        <h3>RBAC + OIDC</h3>
+        <p>Token-scoped read/write/admin levels. RS256 JWT validation against any OIDC provider — Okta, Azure AD, Google.</p>
+      </div>
+      <div class="ent-card">
+        <div class="ent-icon">📋</div>
+        <h3>Audit log</h3>
+        <p>Structured JSON record of every capture, flush, and replay. Tamper-evident. Required for PCI-DSS and HIPAA environments.</p>
+      </div>
+      <div class="ent-card">
+        <div class="ent-icon">🔒</div>
+        <h3>TLS + secret management</h3>
+        <p>TLS on the collection server. Keys from Vault, AWS Secrets Manager, or Azure Key Vault via URI scheme.</p>
+      </div>
+      <div class="ent-card">
+        <div class="ent-icon">🧹</div>
+        <h3>PII scrubbing</h3>
+        <p><code>rewind scrub</code> redacts headers, strips bodies, and filters paths before sharing snapshots. GDPR delete by user ID.</p>
+      </div>
+      <div class="ent-card">
+        <div class="ent-icon">📊</div>
+        <h3>Compliance reports</h3>
+        <p><code>rewind compliance</code> outputs machine-readable SOC 2 / GDPR evidence: encryption status, RBAC setup, retention config, audit log summary.</p>
+      </div>
+      <div class="ent-card">
+        <div class="ent-icon">☁️</div>
+        <h3>HA object storage</h3>
+        <p>S3, GCS, and Azure Blob backends for the collection server. Stateless replicas with leader-election retention jobs.</p>
+      </div>
+      <div class="ent-card">
+        <div class="ent-icon">📅</div>
+        <h3>Retention policies</h3>
+        <p>Max-age and max-size TTL cleanup. <code>rewind retention --max-age 30d --max-size 50GB --delete</code></p>
+      </div>
+      <div class="ent-card">
+        <div class="ent-icon">🔔</div>
+        <h3>Auto-trigger</h3>
+        <p>PagerDuty and Opsgenie webhook listener. Flushes automatically when an alert opens — HMAC-SHA256 signature verified.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Compare ────────────────────────────────────────────────────────────── -->
+<section>
+  <div class="wrap">
+    <div class="section-label">Why rewind</div>
+    <h2>Purpose-built for incident debugging.</h2>
+    <p class="section-sub">
+      Other tools solve adjacent problems. rewind's unique position: open source,
+      kernel-level capture, deterministic replay of real production incidents.
+    </p>
+    <div class="compare-wrap reveal">
+      <table>
+        <thead>
+          <tr>
+            <th>Tool</th>
+            <th>Zero instrumentation</th>
+            <th>Deterministic replay</th>
+            <th>DB state capture</th>
+            <th>Distributed services</th>
+            <th>Open source</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="hi-row">
+            <td>rewind</td>
+            <td class="check">✓</td>
+            <td class="check">✓</td>
+            <td class="check">✓</td>
+            <td class="check">✓</td>
+            <td class="check">✓</td>
+          </tr>
+          <tr>
+            <td>Mozilla rr</td>
+            <td class="cross">—</td>
+            <td class="check">✓</td>
+            <td class="cross">—</td>
+            <td class="cross">single process</td>
+            <td class="check">✓</td>
+          </tr>
+          <tr>
+            <td>Speedscale</td>
+            <td class="cross">—</td>
+            <td class="cross">—</td>
+            <td class="cross">—</td>
+            <td class="check">✓</td>
+            <td class="cross">—</td>
+          </tr>
+          <tr>
+            <td>GoReplay</td>
+            <td class="check">✓</td>
+            <td class="cross">—</td>
+            <td class="cross">—</td>
+            <td class="cross">HTTP only</td>
+            <td class="check">✓</td>
+          </tr>
+          <tr>
+            <td>Jepsen</td>
+            <td class="cross">—</td>
+            <td class="cross">—</td>
+            <td class="cross">—</td>
+            <td class="cross">synthetic faults</td>
+            <td class="check">✓</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ── Quickstart ──────────────────────────────────────────────────────────── -->
+<section class="alt">
+  <div class="wrap-narrow">
+    <div class="section-label">Get started</div>
+    <h2>Your first replay in 15 minutes.</h2>
+    <p class="section-sub">Linux 5.10+, Docker Compose, and root or CAP_BPF access are all you need.</p>
+
+    <div style="margin-top:28px">
+      <p style="font-size:.9rem;color:var(--muted);margin-bottom:8px">Install the binary:</p>
+      <div class="install-pill" id="install-cmd">
+        curl -Lo rewind https://github.com/anduaura/rewind/releases/latest/download/rewind-x86_64-unknown-linux-musl &amp;&amp; chmod +x rewind &amp;&amp; sudo mv rewind /usr/local/bin/
+        <button class="copy-inline" onclick="copyInstall()">Copy</button>
+      </div>
+    </div>
+
+    <div class="qs-steps reveal">
+      <div class="qs-step">
+        <div class="qs-num">1</div>
+        <div>
+          <h4>Start your application</h4>
+          <p>rewind attaches to any running Docker Compose stack — no restarts required.</p>
+          <div class="code-block"><span class="prompt">$</span> docker compose up -d</div>
+        </div>
+      </div>
+      <div class="qs-step">
+        <div class="qs-num">2</div>
+        <div>
+          <h4>Attach the agent</h4>
+          <p>The agent auto-detects services from your compose file and starts capturing immediately.</p>
+          <div class="code-block"><span class="prompt">$</span> sudo rewind attach<br>
+<span style="color:var(--muted)">Detected 2 service(s): api, worker<br>Recording…</span></div>
+        </div>
+      </div>
+      <div class="qs-step">
+        <div class="qs-num">3</div>
+        <div>
+          <h4>Trigger an incident &amp; flush</h4>
+          <p>After observing the problem, snapshot the ring buffer. The agent keeps running.</p>
+          <div class="code-block"><span class="prompt">$</span> rewind flush --window 2m --output incident.rwd<br>
+<span style="color:var(--muted)">Flushed 47 events to incident.rwd</span></div>
+        </div>
+      </div>
+      <div class="qs-step">
+        <div class="qs-num">4</div>
+        <div>
+          <h4>Inspect the snapshot</h4>
+          <p>See exactly what was captured: HTTP calls, DB queries, syscalls, timestamps.</p>
+          <div class="code-block"><span class="prompt">$</span> rewind inspect incident.rwd</div>
+        </div>
+      </div>
+      <div class="qs-step">
+        <div class="qs-num">5</div>
+        <div>
+          <h4>Replay it</h4>
+          <p>The engine overrides the clock, mocks outbound calls, and re-fires the trigger. Exit 0 = match, exit 1 = divergence.</p>
+          <div class="code-block"><span class="prompt">$</span> rewind replay incident.rwd --compose docker-compose.yml<br>
+<span style="color:var(--green)">  status: 201 == 201 ✓<br>  body:   match ✓</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── CTA band ────────────────────────────────────────────────────────────── -->
+<section class="cta-band">
+  <div class="wrap-narrow">
+    <h2>Stop guessing. Start replaying.</h2>
+    <p>Open source, Apache 2.0. No account required to get started.</p>
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="https://github.com/anduaura/rewind/blob/main/docs/getting-started.md">
+        Read the docs →
+      </a>
+      <a class="btn btn-ghost" href="https://github.com/anduaura/rewind">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        Star on GitHub
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ── Footer ──────────────────────────────────────────────────────────────── -->
+<footer>
+  <div class="wrap">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <div class="logo">re<span>wind</span></div>
+        <p>Deterministic replay for distributed system incidents. Open source, Apache 2.0.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="#how-it-works">How it works</a></li>
+          <li><a href="#enterprise">Enterprise</a></li>
+          <li><a href="https://github.com/anduaura/rewind/releases">Releases</a></li>
+          <li><a href="https://github.com/anduaura/rewind/blob/main/CONTRIBUTING.md">Contributing</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Docs</h4>
+        <ul>
+          <li><a href="https://github.com/anduaura/rewind/blob/main/docs/getting-started.md">Getting started</a></li>
+          <li><a href="https://github.com/anduaura/rewind/blob/main/docs/kubernetes.md">Kubernetes</a></li>
+          <li><a href="https://github.com/anduaura/rewind/blob/main/docs/configuration.md">Configuration</a></li>
+          <li><a href="https://github.com/anduaura/rewind/blob/main/docs/architecture.md">Architecture</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Community</h4>
+        <ul>
+          <li><a href="https://github.com/anduaura/rewind">GitHub</a></li>
+          <li><a href="https://github.com/anduaura/rewind/issues">Issues</a></li>
+          <li><a href="https://github.com/anduaura/rewind/blob/main/LICENSE">Apache 2.0 License</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p>© 2026 rewind contributors. Apache License 2.0.</p>
+      <p style="font-size:.8rem">Built with eBPF · Rust · aya</p>
+    </div>
+  </div>
+</footer>
+
+<div id="toast">Copied!</div>
+
+<script>
+// ── Scroll reveal ──────────────────────────────────────────────────────────
+const observer = new IntersectionObserver(
+  (entries) => entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); }),
+  { threshold: 0.1 }
+);
+document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+
+// ── Copy helpers ───────────────────────────────────────────────────────────
+function showToast() {
+  const t = document.getElementById('toast');
+  t.style.opacity = '1';
+  clearTimeout(t._tid);
+  t._tid = setTimeout(() => t.style.opacity = '0', 2000);
+}
+
+function copyInstall() {
+  const text = 'curl -Lo rewind https://github.com/anduaura/rewind/releases/latest/download/rewind-x86_64-unknown-linux-musl && chmod +x rewind && sudo mv rewind /usr/local/bin/';
+  navigator.clipboard.writeText(text).then(showToast);
+}
+
+document.querySelectorAll('.copy-btn[data-copy]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    navigator.clipboard.writeText(btn.dataset.copy).then(showToast);
+  });
+});
+
+// ── Active nav link ────────────────────────────────────────────────────────
+const sections = document.querySelectorAll('section[id]');
+const navLinks  = document.querySelectorAll('.nav-links a[href^="#"]');
+window.addEventListener('scroll', () => {
+  let current = '';
+  sections.forEach(s => {
+    if (window.scrollY >= s.offsetTop - 80) current = s.id;
+  });
+  navLinks.forEach(a => {
+    a.style.color = a.getAttribute('href') === '#' + current ? 'var(--text)' : '';
+  });
+}, { passive: true });
+</script>
+</body>
+</html>
