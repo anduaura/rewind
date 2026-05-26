@@ -27,6 +27,36 @@ rewind captures the full causal chain of an incident and lets you replay it dete
 
 The output is a `.rwd` file (JSON) containing the full causal chain.
 
+## Always-on in production
+
+rewind is designed to run permanently in production — the eBPF agent attaches
+once and stays attached. There is no "start recording before the incident"
+problem: by the time you notice the incident, the data is already captured.
+
+**Flight-recorder pattern.** The agent writes every captured event into an
+in-memory ring buffer capped at ~200 k events (~5 minutes of typical traffic).
+Nothing touches disk. Overhead is low enough to leave running indefinitely
+(~1-3 % CPU at 1000 req/s — see [performance overhead](#performance-overhead)).
+
+**Triggered, not continuous.** When an alert fires, you flush the buffer:
+
+```bash
+rewind flush --window 5m --output incident.rwd
+```
+
+At 1000 req/s that compresses to ~5-10 MB. You get the causal chain leading
+up to the incident, not just what happened after you noticed.
+
+**Auto-trigger on alert.** PagerDuty, Opsgenie, or a generic webhook can hit
+the rewind webhook endpoint the moment an alert opens, so the flush happens
+automatically while the incident is still hot — see
+[`rewind notify` / webhook trigger](docs/configuration.md).
+
+**Kubernetes.** The agent runs as a DaemonSet (one pod per node). On flush, it
+pushes the `.rwd` snapshot over HTTP to the central [`rewind server`](docs/configuration.md),
+which replaces the painful `kubectl cp` step. Engineers pull the snapshot from
+the server and replay it locally.
+
 ## Documentation
 
 - **[Getting started](docs/getting-started.md)** — capture and replay your first incident in 15 minutes
