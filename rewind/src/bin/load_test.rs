@@ -271,7 +271,7 @@ async fn main() {
                 let ok = counters.total_ok();
                 let err = counters.errors.load(Ordering::Relaxed);
                 let elapsed = start.elapsed().as_secs();
-                let rps = if elapsed > 0 { ok / elapsed } else { 0 };
+                let rps = ok.checked_div(elapsed).unwrap_or(0);
                 println!("  t={elapsed:3}s  ok={ok}  err={err}  {rps} req/s");
             }
         });
