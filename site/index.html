@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>rewind — Deterministic incident replay for distributed systems</title>
-<meta name="description" content="Capture inter-service HTTP traffic, DB calls, and syscalls with eBPF. Replay the exact production incident on your laptop — deterministically, with zero code changes.">
-<meta property="og:title" content="rewind — Deterministic incident replay for distributed systems">
-<meta property="og:description" content="eBPF-powered capture of production incidents. Replay them locally, deterministically. Zero instrumentation required.">
+<title>rewind — AI agents can describe your incident. rewind lets them fix it.</title>
+<meta name="description" content="rewind captures production incidents as re-runnable snapshots using eBPF. Give an agent the snapshot and it can replay, patch, and verify a fix deterministically. Not a guess — a proven result.">
+<meta property="og:title" content="rewind — AI agents can describe your incident. rewind lets them fix it.">
+<meta property="og:description" content="eBPF-powered capture of production incidents. Give an AI agent the snapshot and it replays, patches, and verifies a fix deterministically.">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⏪</text></svg>">
@@ -371,6 +371,60 @@ footer {
   border-radius: 8px; padding: 10px 18px; font-size: 13px;
   opacity: 0; transition: opacity .3s; pointer-events: none;
 }
+
+/* ── Agent loop section ─────────────────────────────────────────────────────── */
+.agent-contrast {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin: 48px 0;
+}
+@media (max-width: 680px) { .agent-contrast { grid-template-columns: 1fr; } }
+.contrast-card {
+  border: 1px solid var(--border); border-radius: var(--r);
+  padding: 28px 24px;
+}
+.contrast-card.before { border-color: rgba(239,68,68,.25); background: rgba(239,68,68,.04); }
+.contrast-card.after  { border-color: rgba(34,197,94,.25);  background: rgba(34,197,94,.04);  }
+.contrast-label {
+  font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  margin-bottom: 12px;
+}
+.contrast-card.before .contrast-label { color: var(--red); }
+.contrast-card.after  .contrast-label { color: var(--green); }
+.contrast-card h3 { font-size: 1.1rem; margin-bottom: 8px; }
+.contrast-card p  { font-size: .9rem; color: var(--muted); line-height: 1.65; }
+.agent-steps { display: flex; flex-direction: column; gap: 0; margin: 40px 0 0; }
+.agent-step {
+  display: flex; gap: 20px; align-items: flex-start;
+  padding: 16px 0; border-bottom: 1px solid var(--border);
+}
+.agent-step:last-child { border-bottom: none; }
+.agent-step-num {
+  width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+  background: rgba(59,130,246,.15); border: 1px solid rgba(59,130,246,.3);
+  color: var(--accent); font-size: 13px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.agent-step-body h4 { font-size: .95rem; margin-bottom: 4px; }
+.agent-step-body p  { font-size: .88rem; color: var(--muted); }
+
+/* ── Early access form ──────────────────────────────────────────────────────── */
+.early-form {
+  display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; margin-top: 32px;
+}
+.early-form input[type="email"] {
+  flex: 1 1 260px; max-width: 360px;
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text); border-radius: var(--r);
+  padding: 12px 16px; font-size: 15px; outline: none;
+}
+.early-form input[type="email"]:focus { border-color: var(--accent); }
+.early-form input[type="email"]::placeholder { color: var(--muted); }
+.early-form button {
+  background: var(--accent); color: #fff; border: none;
+  border-radius: var(--r); padding: 12px 24px;
+  font-size: 15px; font-weight: 600; cursor: pointer; transition: background .15s;
+}
+.early-form button:hover { background: #2563eb; }
+.early-note { font-size: .83rem; color: var(--muted); margin-top: 14px; }
 </style>
 </head>
 
@@ -380,11 +434,12 @@ footer {
 <nav>
   <a href="/" class="nav-logo">re<span>wind</span></a>
   <div class="nav-links">
+    <a href="#agent-loop"   class="hide-mobile">Agent demo</a>
     <a href="#how-it-works" class="hide-mobile">How it works</a>
     <a href="#enterprise"   class="hide-mobile">Enterprise</a>
     <a href="https://github.com/anduaura/rewind/tree/main/docs" class="hide-mobile">Docs</a>
     <a href="https://github.com/anduaura/rewind">GitHub</a>
-    <a href="https://github.com/anduaura/rewind/blob/main/docs/getting-started.md" class="nav-cta">Get started →</a>
+    <a href="#early-access" class="nav-cta">Early access →</a>
   </div>
 </nav>
 
@@ -396,21 +451,25 @@ footer {
       Open source &middot; Apache 2.0
     </div>
 
-    <h1>Every production incident,<br>reproducible on your laptop.</h1>
+    <h1>AI agents can describe<br>your incident.<br>rewind lets them fix it.</h1>
 
     <p class="hero-sub">
-      rewind captures inter-service HTTP traffic, database calls, and
-      non-deterministic syscalls using eBPF — then replays the exact causal
-      chain locally, deterministically. Zero code changes. Zero instrumentation.
+      rewind captures the full causal chain of a production incident as a
+      re-runnable <code>.rwd</code> snapshot — using eBPF, zero code changes.
+      Give an agent the snapshot: it replays, patches, and verifies the fix
+      deterministically. Not a plausible narrative. A proven result.
     </p>
 
     <div class="hero-actions">
-      <a class="btn btn-primary" href="https://github.com/anduaura/rewind/blob/main/docs/getting-started.md">
-        Get started in 15 min →
+      <a class="btn btn-primary" href="#early-access">
+        Request early access →
+      </a>
+      <a class="btn btn-ghost" href="#agent-loop">
+        See the agent demo
       </a>
       <a class="btn btn-ghost" href="https://github.com/anduaura/rewind">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
-        View on GitHub
+        GitHub
       </a>
     </div>
 
@@ -472,6 +531,98 @@ footer {
         <p>Staging has different data, different traffic, and different infrastructure. The bug only manifests in production, where you can't attach a debugger.</p>
       </div>
     </div>
+  </div>
+</section>
+
+<!-- ── Agent loop ─────────────────────────────────────────────────────────── -->
+<section id="agent-loop">
+  <div class="wrap">
+    <div class="section-label">For AI agents</div>
+    <h2>From narrating incidents<br>to verifying fixes.</h2>
+    <p class="section-sub">
+      Every observability AI today does the same thing: ingest logs and traces, produce a plausible
+      English narrative of what probably went wrong. It can't verify the hypothesis — the incident is gone.
+      A <code>.rwd</code> snapshot changes that.
+    </p>
+
+    <div class="agent-contrast reveal">
+      <div class="contrast-card before">
+        <div class="contrast-label">Without rewind</div>
+        <h3>Observability AI</h3>
+        <p>Reads logs and traces. Produces a narrative: <em>"null deref likely caused by upstream contract change."</em> Opens a PR you still have to fully verify, because it has no way to confirm the fix worked.</p>
+      </div>
+      <div class="contrast-card after">
+        <div class="contrast-label">With rewind</div>
+        <h3>rewind + agent</h3>
+        <p>Replays the frozen incident, patches the code, replays again, reports a hard pass/fail. Opens a PR that says: <em>"I reproduced this, applied this fix, and the replay now passes."</em> Trustworthy enough to merge.</p>
+      </div>
+    </div>
+
+    <div class="agent-steps reveal">
+      <div class="agent-step">
+        <div class="agent-step-num">1</div>
+        <div class="agent-step-body">
+          <h4>Replay the incident</h4>
+          <p>The agent runs <code>rewind replay</code> against the <code>.rwd</code> snapshot. The failure reproduces deterministically — same clock, same DB responses, same network calls.</p>
+        </div>
+      </div>
+      <div class="agent-step">
+        <div class="agent-step-num">2</div>
+        <div class="agent-step-body">
+          <h4>Propose a patch</h4>
+          <p>The agent reads the snapshot (what was recorded) and the service code (what was running). It proposes a targeted fix via tool_use.</p>
+        </div>
+      </div>
+      <div class="agent-step">
+        <div class="agent-step-num">3</div>
+        <div class="agent-step-body">
+          <h4>Apply and re-replay</h4>
+          <p>The patch is applied to a sandbox copy of the service. The same snapshot is replayed against the patched code.</p>
+        </div>
+      </div>
+      <div class="agent-step">
+        <div class="agent-step-num">4</div>
+        <div class="agent-step-body">
+          <h4>Hard pass/fail signal</h4>
+          <p>If the replay returns 2xx: verified fix. If not: iterate with the failure fed back as context. The agent gets a signal, not a vibe.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="terminal-wrap reveal" style="margin-top:48px">
+      <div class="terminal">
+        <div class="terminal-bar">
+          <span class="dot dot-red"></span>
+          <span class="dot dot-yel"></span>
+          <span class="dot dot-grn"></span>
+          <span class="terminal-title">python agent.py</span>
+        </div>
+        <div class="terminal-body" style="font-size:12.5px">
+<span class="dim">── Step 1 — confirm bug reproduces ─────────────────────────────</span><br>
+<span class="out">  status_code=500  passed=False</span><br>
+<span class="out">  details: JSONDecodeError: Expecting value (worker returned 204 No Content)</span><br>
+<br>
+<span class="dim">── Step 2 — ask Claude for a patch ─────────────────────────────</span><br>
+<span class="out">  agent explanation:</span><br>
+<span class="out">    The worker now returns 204 No Content for some responses. The API</span><br>
+<span class="out">    calls .json() unconditionally, crashing on an empty body. Guard</span><br>
+<span class="out">    against 204 / empty responses before parsing.</span><br>
+<br>
+<span class="dim">── Step 3 — apply patch and re-replay ──────────────────────────</span><br>
+<span class="out">  status_code=200  passed=True</span><br>
+<span class="out">  body: {"job_id":7,"status":"ok","worker_result":null}</span><br>
+<br>
+<span class="ok">VERIFIED — replay is green after the agent's patch.</span><br>
+<span class="ok">This is a verified fix, not a suspected one.</span>
+        </div>
+      </div>
+    </div>
+
+    <p style="text-align:center;margin-top:20px;font-size:.88rem;color:var(--muted)">
+      Full source in
+      <a href="https://github.com/anduaura/rewind/tree/main/agent-harness">agent-harness/</a>
+      — run it yourself with an Anthropic API key.
+    </p>
   </div>
 </section>
 
@@ -736,6 +887,14 @@ footer {
             <td class="check">✓</td>
           </tr>
           <tr>
+            <td>Datadog AI / observability</td>
+            <td class="cross">agent required</td>
+            <td class="cross">narrative only</td>
+            <td class="cross">metrics only</td>
+            <td class="check">✓</td>
+            <td class="cross">—</td>
+          </tr>
+          <tr>
             <td>Mozilla rr</td>
             <td class="cross">—</td>
             <td class="check">✓</td>
@@ -836,20 +995,23 @@ footer {
   </div>
 </section>
 
-<!-- ── CTA band ────────────────────────────────────────────────────────────── -->
-<section class="cta-band">
-  <div class="wrap-narrow">
-    <h2>Stop guessing. Start replaying.</h2>
-    <p>Open source, Apache 2.0. No account required to get started.</p>
-    <div class="hero-actions">
-      <a class="btn btn-primary" href="https://github.com/anduaura/rewind/blob/main/docs/getting-started.md">
-        Read the docs →
-      </a>
-      <a class="btn btn-ghost" href="https://github.com/anduaura/rewind">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
-        Star on GitHub
-      </a>
-    </div>
+<!-- ── Early access ─────────────────────────────────────────────────────────── -->
+<section class="cta-band" id="early-access">
+  <div class="wrap-narrow" style="text-align:center">
+    <h2>Get early access.</h2>
+    <p style="color:var(--muted);max-width:520px;margin:12px auto 0;line-height:1.7">
+      We're working with a small group of engineering teams running Kubernetes in production.
+      If you debug distributed incidents and want to try rewind — or use it as a substrate
+      for your own AI debugging tooling — we'd like to talk.
+    </p>
+    <!-- Replace the action URL with your Formspree / Tally / email endpoint -->
+    <form class="early-form" action="mailto:andu.ucsd@gmail.com" method="GET" enctype="text/plain">
+      <input type="email" name="email" placeholder="you@company.com" required>
+      <button type="submit">Request access</button>
+    </form>
+    <p class="early-note">
+      No spam. Or just <a href="https://github.com/anduaura/rewind">star on GitHub</a> to follow along.
+    </p>
   </div>
 </section>
 
