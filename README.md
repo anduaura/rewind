@@ -1,8 +1,8 @@
 # rewind
 
-**[rewind.anduaura.github.io](https://anduaura.github.io/rewind/)** · Deterministic replay of distributed system incidents.
+**[rewind.anduaura.github.io](https://anduaura.github.io/rewind/)** · AI agents can describe your incident. rewind lets them fix it.
 
-Record inter-service traffic and non-deterministic syscalls in production using eBPF — no code changes required. Then replay the exact incident locally for debugging.
+rewind captures the full causal chain of a production incident as a re-runnable `.rwd` snapshot using eBPF — no code changes, no instrumentation. Give an agent the snapshot and it can replay, patch, and verify a fix deterministically. Not a plausible narrative. A proven result.
 
 ## The problem
 
@@ -300,6 +300,24 @@ python agent.py
 ```
 
 See [`agent-harness/README.md`](agent-harness/README.md) for the full walkthrough.
+
+## Why not just use Datadog?
+
+Datadog observes. rewind re-executes. These are different products built on different infrastructure.
+
+Datadog (and every observability AI built on top of it) ingests streaming telemetry and produces a *narrative*: a plausible English description of what probably went wrong. It cannot verify its own hypothesis, because the incident is gone — the state, the timing, and the exact inputs are unrecoverable from logs.
+
+A `.rwd` snapshot is not a description of the incident. It's the incident itself, frozen and re-runnable. That unlocks a qualitatively different capability:
+
+1. **Replay** the incident → observe the failure deterministically
+2. **Patch** the code → replay again → did the failure disappear?
+3. If yes: **verified fix**. The agent opens a PR that says "I reproduced this, applied this fix, and the replay now passes." Not a guess — a proven result.
+
+Three reasons Datadog can't add this as a feature:
+
+- **Different infrastructure.** Deterministic replay requires owning the execution environment — overriding `clock_gettime`, seeding `getrandom`, intercepting every outbound call. That's not observability; it's closer to Mozilla `rr`. Different codebase, different team.
+- **Misaligned incentives.** Datadog charges by data volume. rewind's value is that a 5-minute, 10 MB snapshot is sufficient to fix the bug. A product that reduces storage consumption directly conflicts with their business model.
+- **eBPF for replay is harder than eBPF for observation.** Capturing enough fidelity for deterministic replay — DB wire protocol responses correlated with their queries, non-deterministic syscall values, cross-service trace correlation — is a much higher bar than sampling traffic for dashboards. It took months to build correctly.
 
 ## Comparable tools
 
