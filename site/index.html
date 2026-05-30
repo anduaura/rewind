@@ -1004,12 +1004,16 @@ footer {
       If you debug distributed incidents and want to try rewind — or use it as a substrate
       for your own AI debugging tooling — we'd like to talk.
     </p>
-    <!-- Replace the action URL with your Formspree / Tally / email endpoint -->
-    <form class="early-form" action="mailto:andu.ucsd@gmail.com" method="GET" enctype="text/plain">
-      <input type="email" name="email" placeholder="you@company.com" required>
-      <button type="submit">Request access</button>
+    <!-- Formspree: sign up at formspree.io, create a form, replace FORM_ID below -->
+    <form class="early-form" id="early-form">
+      <input type="email" id="early-email" placeholder="you@company.com" required>
+      <button type="submit" id="early-btn">Request access</button>
     </form>
-    <p class="early-note">
+    <div id="early-success" style="display:none;margin-top:24px">
+      <span style="color:var(--green);font-size:1.1rem;font-weight:600">✓ You're on the list.</span>
+      <p class="early-note" style="margin-top:8px">We'll be in touch within a day or two.</p>
+    </div>
+    <p class="early-note" id="early-note">
       No spam. Or just <a href="https://github.com/anduaura/rewind">star on GitHub</a> to follow along.
     </p>
   </div>
@@ -1084,6 +1088,34 @@ document.querySelectorAll('.copy-btn[data-copy]').forEach(btn => {
   btn.addEventListener('click', () => {
     navigator.clipboard.writeText(btn.dataset.copy).then(showToast);
   });
+});
+
+// ── Early access form ──────────────────────────────────────────────────────
+const FORMSPREE_ID = 'FORM_ID'; // replace with your Formspree form ID
+document.getElementById('early-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = document.getElementById('early-email').value;
+  const btn   = document.getElementById('early-btn');
+  btn.textContent = 'Sending…';
+  btn.disabled = true;
+  try {
+    const res = await fetch(`https://formspree.io/f/${FORMSPREE_ID}`, {
+      method: 'POST',
+      headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    if (res.ok) {
+      document.getElementById('early-form').style.display = 'none';
+      document.getElementById('early-note').style.display = 'none';
+      document.getElementById('early-success').style.display = 'block';
+    } else {
+      btn.textContent = 'Try again';
+      btn.disabled = false;
+    }
+  } catch {
+    btn.textContent = 'Try again';
+    btn.disabled = false;
+  }
 });
 
 // ── Active nav link ────────────────────────────────────────────────────────
