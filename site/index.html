@@ -1004,7 +1004,7 @@ footer {
       If you debug distributed incidents and want to try rewind — or use it as a substrate
       for your own AI debugging tooling — we'd like to talk.
     </p>
-    <!-- Formspree: sign up at formspree.io, create a form, replace FORM_ID below -->
+    <!-- Formspree endpoint: meeddvby -->
     <form class="early-form" id="early-form">
       <input type="email" id="early-email" placeholder="you@company.com" required>
       <button type="submit" id="early-btn">Request access</button>
@@ -1091,7 +1091,7 @@ document.querySelectorAll('.copy-btn[data-copy]').forEach(btn => {
 });
 
 // ── Early access form ──────────────────────────────────────────────────────
-const FORMSPREE_ID = 'FORM_ID'; // replace with your Formspree form ID
+const FORMSPREE_ID = 'meeddvby';
 document.getElementById('early-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const email = document.getElementById('early-email').value;
